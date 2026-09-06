@@ -1,0 +1,79 @@
+# Prometheus JMX exporter config for Kafka Connect worker + connector/task
+# metrics (kafka.connect:* MBeans). Trimmed to the metrics most useful for
+# spotting pipeline problems; extend as needed.
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+rules:
+  # Per-connector, per-task status and throughput
+  - pattern: "kafka.connect<type=connector-task-metrics, connector=(.+), task=(.+)><>status: (.+)"
+    name: "kafka_connect_task_status"
+    labels:
+      connector: "$1"
+      task: "$2"
+      status: "$3"
+    value: 1
+    type: GAUGE
+
+  - pattern: "kafka.connect<type=(connector-task-metrics|connector-metrics|source-task-metrics|sink-task-metrics), connector=(.+), task=(.+)><>([a-z0-9-]+):"
+    name: "kafka_connect_$1_$4"
+    labels:
+      connector: "$2"
+      task: "$3"
+    type: GAUGE
+
+  - pattern: "kafka.connect<type=(connector-metrics), connector=(.+)><>([a-z0-9-]+):"
+    name: "kafka_connect_$1_$3"
+    labels:
+      connector: "$2"
+    type: GAUGE
+
+  # Worker-level metrics (task/connector counts, rebalances)
+  - pattern: "kafka.connect<type=connect-worker-metrics><>([a-z0-9-]+):"
+    name: "kafka_connect_worker_$1"
+    type: GAUGE
+
+  - pattern: "kafka.connect<type=connect-worker-rebalance-metrics><>([a-z0-9-]+):"
+    name: "kafka_connect_worker_rebalance_$1"
+    type: GAUGE
+
+  # zv SQL metrics (MetricsManager's Codahale JmxReporter on this worker).
+  # MBean name: zv-postgres-source.<connector>.sql.-1.n/a.<statementId>.<metric>;
+  # <metric> is success, durationMs, runs, failures, or the label of a numeric
+  # result column of the SQL resource (e.g. wal_lsn_diff) which becomes zv_sql_<column>.
+  - pattern: 'metrics<name=zv-postgres-source\.(.+)\.sql\.-1\.n/a\.(.+)\.success><>Value'
+    name: zv_sql_statement_success
+    labels:
+      connector: "$1"
+      statement: "$2"
+    type: GAUGE
+
+  - pattern: 'metrics<name=zv-postgres-source\.(.+)\.sql\.-1\.n/a\.(.+)\.([A-Za-z0-9_]+)><>Value'
+    name: zv_sql_$3
+    labels:
+      connector: "$1"
+      statement: "$2"
+    type: GAUGE
+
+  - pattern: 'metrics<name=zv-postgres-source\.(.+)\.sql\.-1\.n/a\.(runs|failures)><>Count'
+    name: zv_sql_$2_total
+    labels:
+      connector: "$1"
+    type: COUNTER
+
+  - pattern: 'metrics<name=zv-postgres-source\.(.+)\.sql\.-1\.n/a\.(.+)\.durationMs><>Count'
+    name: zv_sql_statement_duration_ms_count
+    labels:
+      connector: "$1"
+      statement: "$2"
+    type: COUNTER
+
+  - pattern: 'metrics<name=zv-postgres-source\.(.+)\.sql\.-1\.n/a\.(.+)\.durationMs><>Mean'
+    name: zv_sql_statement_duration_ms_mean
+    labels:
+      connector: "$1"
+      statement: "$2"
+    type: GAUGE
+
+  # Catch-all for JVM + everything else
+  - pattern: ".*"

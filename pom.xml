@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.zv</groupId>
+  <artifactId>zv-monitor-parent</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <name>zv Monitor Parent</name>
+  <description>
+    Parent/aggregator for the zv-monitor build: the zv-monitor app
+    (Kafka Connector Monitor), the shared zv-debezium-common module
+    (utilities + SMTs), and the zv-debezium fork's PostgreSQL + JDBC
+    connector modules.
+  </description>
+
+  <modules>
+    <module>zv-monitor</module>
+    <module>zv-debezium-common</module>
+    <module>zv-debezium-connector-postgres</module>
+    <module>zv-debezium-connector-jdbc</module>
+    <module>zv-debezium/debezium-connector-postgres</module>
+    <module>zv-debezium/debezium-connector-jdbc</module>
+  </modules>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <maven.compiler.release>17</maven.compiler.release>
+
+    <!-- Common Java library versions, consumed by <dependencyManagement> below. -->
+    <version.junit>5.10.2</version.junit>
+    <version.jackson>2.17.1</version.jackson>
+    <version.guava>33.3.1-jre</version.guava>
+    <version.slf4j>2.0.13</version.slf4j>
+    <version.assertj>3.26.3</version.assertj>
+    <version.mockito>5.12.0</version.mockito>
+    <version.awaitility>4.2.1</version.awaitility>
+    <version.commons-lang3>3.14.0</version.commons-lang3>
+    <version.lombok>1.18.36</version.lombok>
+    <!-- Dropwizard Metrics 3.2.6: the last release whose classes live under
+         the com.codahale.metrics.* packages (the 4.x line renamed them to
+         io.dropwizard.metrics.*; the 3.1+ artifacts publish under the
+         io.dropwizard.metrics groupId, com.codahale.metrics stops at 3.0.2).
+         Consumed by the connector poms' dependencyManagement pins for
+         zv-debezium-common's MetricsManager - see that module's pom. -->
+    <version.codahale.metrics>3.2.6</version.codahale.metrics>
+
+    <!-- Maven plugin versions, consumed by <pluginManagement> below. -->
+    <version.compiler.plugin>3.13.0</version.compiler.plugin>
+    <version.surefire.plugin>3.2.5</version.surefire.plugin>
+    <version.jar.plugin>3.4.1</version.jar.plugin>
+    <version.shade.plugin>3.5.3</version.shade.plugin>
+    <version.dependency.plugin>3.6.1</version.dependency.plugin>
+
+    <!-- JMX exporter agent, fetched into lib/ for the Docker images (see README) -->
+    <version.jmx-prometheus-javaagent>0.20.0</version.jmx-prometheus-javaagent>
+  </properties>
+
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- Testing: JUnit 5 (Jupiter) -->
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${version.junit}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <!-- JSON processing (Kafka Connect REST payloads, connector configs, ...) -->
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${version.jackson}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <!-- Google Guava: collections, caching, concurrency helpers -->
+      <dependency>
+        <groupId>com.google.guava</groupId>
+        <artifactId>guava</artifactId>
+        <version>${version.guava}</version>
+      </dependency>
+
+      <!-- Logging API + lightweight binding -->
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>${version.slf4j}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-simple</artifactId>
+        <version>${version.slf4j}</version>
+      </dependency>
+
+      <!-- Common test helpers -->
+      <dependency>
+        <groupId>org.assertj</groupId>
+        <artifactId>assertj-core</artifactId>
+        <version>${version.assertj}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-bom</artifactId>
+        <version>${version.mockito}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.awaitility</groupId>
+        <artifactId>awaitility</artifactId>
+        <version>${version.awaitility}</version>
+        <scope>test</scope>
+      </dependency>
+
+      <!-- Misc commons -->
+      <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-lang3</artifactId>
+        <version>${version.commons-lang3}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <version>${version.lombok}</version>
+        <scope>provided</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>fetch-jmx-prometheus-javaagent</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>copy</goal>
+            </goals>
+            <configuration>
+              <artifactItems>
+                <artifactItem>
+                  <groupId>io.prometheus.jmx</groupId>
+                  <artifactId>jmx_prometheus_javaagent</artifactId>
+                  <version>${version.jmx-prometheus-javaagent}</version>
+                </artifactItem>
+              </artifactItems>
+              <outputDirectory>${project.basedir}/../lib</outputDirectory>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>${version.compiler.plugin}</version>
+          <configuration>
+            <release>${maven.compiler.release}</release>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>${version.surefire.plugin}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>${version.jar.plugin}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>${version.shade.plugin}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-dependency-plugin</artifactId>
+          <version>${version.dependency.plugin}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>
+

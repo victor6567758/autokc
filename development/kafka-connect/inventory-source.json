@@ -1,0 +1,14 @@
+{
+  "connector.class": "com.zv.kcmanager.source.postgresql.ZvPostgresSourceConnector",
+  "database.hostname": "postgres-source",
+  "database.port": "5432",
+  "database.user": "postgres",
+  "database.password": "postgres",
+  "database.dbname": "sourcedb",
+  "topic.prefix": "sourcedb",
+  "plugin.name": "pgoutput",
+  "publication.name": "dbz_publication",
+  "table.include.list": "public.customers,public.orders",
+  "slot.name": "dbz_customers_slot",
+  "zv.sql.resources": "zv-sql/health.sql"
+}

@@ -1,0 +1,20 @@
+# Prometheus JMX exporter config for the zv-monitor app.
+# Exposes our custom ConnectorHealth MBeans as Prometheus metrics.
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+rules:
+  # Numeric attributes (Healthy, FailedTaskCount, TotalTaskCount,
+  # ConsecutiveFailures, LastCheckedEpochMillis) become gauges automatically.
+  # String attributes (ConnectorName, ConnectorState, LastErrorMessage) are
+  # silently skipped by the exporter since they can't be gauge values -
+  # `connector_health_healthy` is the one to alert on; use the zv-monitor
+  # app's own logs, or query the REST API/JMX directly, for the state string.
+  - pattern: "com.zv<type=ConnectorHealth, name=(.+)><>(\\w+)"
+    name: "connector_health_$2"
+    labels:
+      connector: "$1"
+    type: GAUGE
+
+  # Catch-all for standard JVM metrics (heap, gc, threads, etc.)
+  - pattern: ".*"

@@ -1,0 +1,5 @@
+# pgweb connection bookmark (one file per database): the CDC source.
+# Hostname is the docker-compose service name, reachable only from inside
+# the compose network - connect via the pgweb UI at localhost:8081 and pick
+# this bookmark in the sessions dropdown.
+url = "postgres://postgres:postgres@postgres-source:5432/sourcedb?sslmode=disable"

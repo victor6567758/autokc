@@ -1,0 +1,14 @@
+{
+  "connector.class": "io.debezium.connector.jdbc.JdbcSinkConnector",
+  "connection.url": "jdbc:postgresql://postgres-sink:5432/sinkdb",
+  "connection.username": "postgres",
+  "connection.password": "postgres",
+  "topics": "sourcedb.public.customers,sourcedb.public.orders",
+  "collection.name.format": "${source.table}",
+  "insert.mode": "upsert",
+  "delete.enabled": "true",
+  "primary.key.mode": "record_key",
+  "primary.key.fields": "id",
+  "schema.evolution": "basic",
+  "use.time.zone": "UTC"
+}

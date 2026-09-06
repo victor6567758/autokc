@@ -1,0 +1,49 @@
+# Kafka broker JMX -> Prometheus rules (:5559)
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+rules:
+  # BrokerTopicMetrics: Count -> counters, OneMinuteRate -> gauges (cluster-wide)
+  - pattern: "kafka.server<type=BrokerTopicMetrics, name=(.+)><>Count:"
+    name: "kafka_server_brokertopicmetrics_$1_total"
+    type: COUNTER
+
+  - pattern: "kafka.server<type=BrokerTopicMetrics, name=(.+)><>OneMinuteRate:"
+    name: "kafka_server_brokertopicmetrics_$1_oneminuterate"
+    type: GAUGE
+
+  # Per-topic variants (appear once topics carry traffic):
+  - pattern: "kafka.server<type=BrokerTopicMetrics, name=(.+), topic=(.+)><>Count:"
+    name: "kafka_server_brokertopicmetrics_$1_total"
+    labels:
+      topic: "$2"
+    type: COUNTER
+
+  - pattern: "kafka.server<type=BrokerTopicMetrics, name=(.+), topic=(.+)><>OneMinuteRate:"
+    name: "kafka_server_brokertopicmetrics_$1_oneminuterate"
+    labels:
+      topic: "$2"
+    type: GAUGE
+
+  # broker health gauges (URP, offline partitions, ...)
+  - pattern: "kafka.server<type=(.+), name=(.+)><>Value:"
+    name: "kafka_server_$1_$2"
+    type: GAUGE
+
+  # Controller (ActiveControllerCount - exactly one broker must report 1)
+  - pattern: "kafka.controller<type=(.+), name=(.+)><>Value:"
+    name: "kafka_controller_$1_$2"
+    type: GAUGE
+
+  # Network layer (RequestHandlerAvgIdlePercent, ...)
+  - pattern: "kafka.network<type=(.+), name=(.+)><>Value:"
+    name: "kafka_network_$1_$2"
+    type: GAUGE
+
+  # Log flushes
+  - pattern: "kafka.log<type=(.+), name=(.+)><>Count:"
+    name: "kafka_log_$1_$2_total"
+    type: COUNTER
+
+  # Catch-all for JVM + everything else
+  - pattern: ".*"

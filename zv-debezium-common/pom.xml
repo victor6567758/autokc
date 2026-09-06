@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.zv</groupId>
+    <artifactId>zv-monitor-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>zv-debezium-common</artifactId>
+  <packaging>jar</packaging>
+
+
+  <properties>
+    <!-- Must match the version in zv-debezium/pom.xml -->
+    <debezium.version>3.7.0-SNAPSHOT</debezium.version>
+    <version.postgresql.driver>42.7.13</version.postgresql.driver>
+    <!-- 1.21.x is required for Docker Engine 29+, whose minimum API version
+         (1.40) is rejected by the docker-java client shipped with 1.19.x. -->
+    <version.testcontainers>1.21.3</version.testcontainers>
+    <version.failsafe.plugin>${version.surefire.plugin}</version.failsafe.plugin>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- Manages org.apache.kafka:* at the fork's version, so the provided
+           connect-api below matches the Kafka runtime in the worker image. -->
+      <dependency>
+        <groupId>io.debezium</groupId>
+        <artifactId>debezium-bom</artifactId>
+        <version>${debezium.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <!-- Manages the Testcontainers artifacts for the shared IT base. -->
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${version.testcontainers}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!-- SMT API; the Kafka Connect worker provides it at runtime, so the
+         connectors' assemblies must NOT package it (hence provided). -->
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>connect-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- Codahale/Dropwizard 3.x metrics for MetricsManager: counters,
+         histograms and gauges reported to SLF4J and JMX (classes under the
+         com.codahale.metrics.* packages; the version lives in the parent's
+         version.codahale.metrics property, and consumers importing
+         debezium-bom must re-pin it locally because the BOM manages this
+         artifact at 4.2.x - see the connector poms). Not
+         part of the Kafka Connect runtime, so it must be packaged into the
+         plugin tarballs (compile scope). -->
+    <dependency>
+      <groupId>io.dropwizard.metrics</groupId>
+      <artifactId>metrics-core</artifactId>
+      <version>${version.codahale.metrics}</version>
+    </dependency>
+
+    <!-- Logging API used by main sources (MetricsManager); the worker
+         runtime provides the API and its binding, so keep it out of the
+         assemblies (provided also covers the test classpath; the connector
+         modules declare their own test-scope slf4j artifacts). -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- Test scope: the SMT unit tests + the shared IT helpers (TestUtils)
+         in src/test/java, shipped as the tests-classifier test-jar. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Docker-backed IT infrastructure for the shared ZvDebeziumITBase -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- JDBC driver for the Testcontainers Postgres (seed/assert helpers) -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>${version.postgresql.driver}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+      <!-- provided: also a compile-time dep of main sources (via connect-api) -->
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Runs the Docker-backed ITs (**/*IT.java) -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>${version.failsafe.plugin}</version>
+        <!-- NOTE for Docker Engine 29+ hosts (minimum API 1.40): docker-java
+              still sends API v1.32 by default and Testcontainers fails to
+              connect: echo 'api.version=1.44' >> ~/.docker-java.properties -->
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Publish src/test/java as the tests-classifier test-jar, so the
+           connector ITs can share TestUtils without copy-pasting it. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>test-jar</id>
+            <goals>
+              <goal>test-jar</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

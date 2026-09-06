@@ -1,0 +1,7 @@
+[submodule "debezium"]
+	path = debezium
+	url = https://github.com/debezium/debezium.git
+	branch = main
+[submodule "zv-debezium"]
+	path = zv-debezium
+	url = https://github.com/victor6567758/zv-debezium.git

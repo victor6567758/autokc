@@ -1,0 +1,214 @@
+{
+  "title": "Pipeline Health",
+  "uid": "zv-monitor-health",
+  "schemaVersion": 39,
+  "version": 4,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Kafka Connect — health & throughput",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 1,
+      "title": "Connector / task status (1 = running)",
+      "type": "table",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "kafka_connect_task_status", "legendFormat": "{{connector}} / task {{task}} / {{status}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Worker connector / task counts",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 7 },
+      "targets": [
+        { "expr": "kafka_connect_worker_connector_count", "legendFormat": "connectors" },
+        { "expr": "kafka_connect_worker_task_count", "legendFormat": "tasks" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Worker rebalances (should be near-flat)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 7 },
+      "targets": [
+        { "expr": "rate(kafka_connect_worker_rebalance_rebalance_total[5m])", "legendFormat": "rebalances/s" },
+        { "expr": "kafka_connect_worker_rebalance_rebalance_avg_time_ms", "legendFormat": "avg time (ms)" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Source record poll / write rate",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 13 },
+      "targets": [
+        { "expr": "kafka_connect_source_task_metrics_source_record_poll_rate", "legendFormat": "{{connector}} poll" },
+        { "expr": "kafka_connect_source_task_metrics_source_record_write_rate", "legendFormat": "{{connector}} write" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Sink consumer lag (max offsets behind)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 13 },
+      "targets": [
+        { "expr": "kafka_consumer_consumer_fetch_manager_metrics_records_lag_max{client_id=~\"connector-consumer-.*\"}", "legendFormat": "{{client_id}}" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Debezium JDBC sink writes / deletes",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 19 },
+      "targets": [
+        { "expr": "debezium_jdbc_connector_metrics_totalnumberofwrites", "legendFormat": "{{server}} writes" },
+        { "expr": "debezium_jdbc_connector_metrics_totalnumberofdeletes", "legendFormat": "{{server}} deletes" }
+      ]
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "Debezium source — silent-timeout detection",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 10,
+      "title": "Milliseconds since last event (climbing = stalled stream)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 26 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 60000 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "debezium_postgres_connector_metrics_millisecondssincelastevent{context=\"streaming\"}", "legendFormat": "{{server}}" }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Milliseconds behind source (freezes if stream stalls)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 26 },
+      "targets": [
+        { "expr": "debezium_postgres_connector_metrics_millisecondsbehindsource{context=\"streaming\"}", "legendFormat": "{{server}}" }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Connected (1 = OK) — cross-check against staleness above",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 32 },
+      "targets": [
+        { "expr": "debezium_postgres_connector_metrics_connected{context=\"streaming\"}", "legendFormat": "{{server}}" }
+      ]
+    },
+    {
+      "id": 201,
+      "type": "row",
+      "title": "zv-monitor — custom health signals",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 6,
+      "title": "Connector healthy (1 = OK, 0 = unhealthy)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 39 },
+      "targets": [
+        { "expr": "connector_health_healthy", "legendFormat": "{{connector}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Consecutive failed polls",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 39 },
+      "targets": [
+        { "expr": "connector_health_consecutivefailures", "legendFormat": "{{connector}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Failed tasks per connector",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 45 },
+      "targets": [
+        { "expr": "connector_health_failedtaskcount", "legendFormat": "{{connector}}" }
+      ]
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "zv SQL — Postgres replication-slot WAL retention",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 13,
+      "title": "WAL retained by replication slot (bytes behind, climbing = slot lagging)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 52 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1073741824 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "zv_sql_wal_lsn_diff", "legendFormat": "{{connector}} / {{statement}}" }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "zv SQL last run (1 = OK, 0 = failed)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 52 },
+      "targets": [
+        { "expr": "zv_sql_statement_success", "legendFormat": "{{connector}} / {{statement}}" }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "zv SQL statement failures (should stay flat at 0)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 58 },
+      "targets": [
+        { "expr": "zv_sql_failures_total", "legendFormat": "{{connector}}" }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "zv SQL statement duration (mean, ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 58 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [
+        { "expr": "zv_sql_statement_duration_ms_mean", "legendFormat": "{{connector}} / {{statement}}" }
+      ]
+    }
+  ]
+}

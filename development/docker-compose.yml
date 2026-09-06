@@ -1,0 +1,191 @@
+# Development CDC pipeline. Run via `make up` from the repo root
+# (builds the images in order, registers the connectors, waits for RUNNING).
+
+services:
+
+  # ---------------------------------------------------------------- Kafka --
+  # Official Apache Kafka image, single broker in combined KRaft mode (no ZooKeeper).
+  kafka:
+    build:
+      context: .
+      dockerfile: ../docker/Dockerfile.kafka
+    image: kafka-broker:dev
+    ports:
+      - "9092:9092"
+      - "5559:5559"   # Prometheus metrics (JMX exporter javaagent)
+    environment:
+      CLUSTER_ID: "4L6g3nShT-eMCtK--X86sw"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # rule config bind-mounted - tweaks don't need a rebuild
+      KAFKA_OPTS: "-javaagent:/opt/jmx_prometheus_javaagent.jar=5559:/opt/kafka-broker-jmx.yml"
+    volumes:
+      - ./monitoring/jmx-exporter/kafka-broker-jmx.yml:/opt/kafka-broker-jmx.yml:ro
+
+  # ------------------------------------- Kafka Connect plugin packagers ----
+  # Build-only images (never started), COPY'd into the worker image by Dockerfile.kc.
+  zv-debezium-connector-postgres:
+    build:
+      context: ../zv-debezium-connector-postgres
+      dockerfile: ../docker/Dockerfile.postgres
+      additional_contexts:
+        - lib=../lib
+    image: zv-debezium-connector-postgres:dev
+
+  zv-debezium-connector-jdbc:
+    build:
+      context: ../zv-debezium-connector-jdbc
+      dockerfile: ../docker/Dockerfile.jdbc
+      additional_contexts:
+        - lib=../lib
+    image: zv-debezium-connector-jdbc:dev
+
+  # --------------------------------------------------------- Kafka Connect --
+  kafka-connect:
+    build:
+      context: .
+      dockerfile: ../docker/Dockerfile.kc
+    image: kafka-connect:dev
+    # the base image's ENTRYPOINT starts a broker - run the Connect worker instead
+    entrypoint: ["/opt/kafka/bin/connect-distributed.sh"]
+    command: ["/opt/kafka/config/connect-distributed.properties"]
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres-source:
+        condition: service_healthy
+      postgres-sink:
+        condition: service_healthy
+    ports:
+      - "8083:8083"   # REST API - register/inspect connectors here
+      - "5557:5557"   # Prometheus metrics (JMX exporter javaagent)
+    environment:
+      # connect-distributed.sh derives the worker JVM options from these
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx1g"
+      # rule config bind-mounted - tweaks don't need a rebuild
+      KAFKA_OPTS: "-javaagent:/opt/jmx_prometheus_javaagent.jar=5557:/opt/kafka-connect-jmx.yml"
+    volumes:
+      - ./kafka-connect/connect-distributed.properties:/opt/kafka/config/connect-distributed.properties:ro
+      - ./monitoring/jmx-exporter/kafka-connect-jmx.yml:/opt/kafka-connect-jmx.yml:ro
+
+  # ------------------------------------------------------------- Postgres --
+  # CDC origin: wal_level=logical, seeded customers/orders tables (./postgres/source-init)
+  postgres-source:
+    image: postgres:16
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=4", "-c", "max_replication_slots=4"]
+    environment:
+      POSTGRES_DB: sourcedb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres/source-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sourcedb"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # CDC target: receives the replicated customers/orders tables
+  postgres-sink:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: sinkdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./postgres/sink-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sinkdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # ---------------------------------------------------------- zv-monitor --
+  # Kafka Connector Monitor: polls Connect REST, exposes connector health as
+  # JMX metrics on :5558.
+  zv-monitor:
+    build:
+      context: ../zv-monitor
+      dockerfile: Dockerfile
+      additional_contexts:
+        - lib=../lib
+    image: zv-monitor:dev
+    depends_on:
+      - kafka-connect
+    ports:
+      - "5558:5558"   # Prometheus metrics
+    environment:
+      CONNECT_REST_URL: http://kafka-connect:8083
+      # Leave CONNECTOR_NAMES unset to auto-discover, or pin explicitly:
+      CONNECTOR_NAMES: "inventory-source,customers-sink"
+      POLL_INTERVAL_MS: "5000"
+    volumes:
+      - ./monitoring/jmx-exporter/zv-monitor-jmx.yml:/app/jmx-exporter-config.yml:ro
+
+  # ------------------------------------------------------------- Kafka UI --
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: zv-monitor
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "true"
+
+  # ---------------------------------------------------------- Postgres UI --
+  # pgweb: quick SQL access to both Postgres instances from the browser.
+  # Connection bookmarks live in ./pgweb/ - one TOML file per database;
+  # switch between them in the UI's sessions dropdown (sourcedb / sinkdb).
+  pgweb:
+    image: sosedoff/pgweb:0.14.2
+    command: ["--sessions", "--bind=0.0.0.0", "--listen=8081", "--skip-open", "--bookmarks-dir=/bookmarks"]
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+      postgres-sink:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./pgweb:/bookmarks:ro
+
+  # ----------------------------------------------------------- Metrics UI --
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    depends_on:
+      - kafka-connect
+      - zv-monitor
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro

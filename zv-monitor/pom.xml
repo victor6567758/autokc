@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.zv</groupId>
+    <artifactId>zv-monitor-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>zv-monitor</artifactId>
+  <packaging>jar</packaging>
+  <name>Kafka Connector Monitor</name>
+
+  <!-- Dependency and plugin versions are managed by zv-monitor-parent
+       (jackson-bom, slf4j, junit-bom, compiler/surefire/shade plugins). -->
+
+  <properties>
+    <version.exec.plugin>3.2.0</version.exec.plugin>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!-- JSON parsing of the Kafka Connect REST API responses -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+
+    <!-- Lightweight logging -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+    </dependency>
+
+    <!-- Testing -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>zv-monitor</finalName>
+    <plugins>
+      <!-- Regenerate zv-monitor/analysis connector parameter YAMLs from the
+           zv-debezium sources on every build. Requires python3 plus the parser
+           packages listed in utils/requirements.txt (tree-sitter-java, PyYAML):
+           pip3 install -r utils/requirements.txt -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>${version.exec.plugin}</version>
+        <executions>
+          <execution>
+            <id>generate-connector-params</id>
+            <phase>generate-resources</phase>
+            <goals><goal>exec</goal></goals>
+            <configuration>
+              <executable>python3</executable>
+              <arguments>
+                <argument>${project.basedir}/../utils/gen_connector_params.py</argument>
+              </arguments>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Build a runnable fat jar so the Docker image stays a one-liner -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>com.zv.ZvMonitorApp</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- maven-surefire-plugin version is managed by the parent pom -->
+    </plugins>
+  </build>
+</project>

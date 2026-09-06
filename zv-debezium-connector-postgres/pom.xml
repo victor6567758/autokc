@@ -1,0 +1,221 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.zv</groupId>
+    <artifactId>zv-monitor-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>zv-debezium-connector-postgres</artifactId>
+  <packaging>jar</packaging>
+
+  <properties>
+    <!-- Must match the version in zv-debezium/pom.xml -->
+    <debezium.version>3.7.0-SNAPSHOT</debezium.version>
+    <!-- Align with zv-debezium's version.postgresql.driver -->
+    <version.postgresql.driver>42.7.13</version.postgresql.driver>
+    <!-- 1.21.x is required for Docker Engine 29+, whose minimum API version
+         (1.40) is rejected by the docker-java client shipped with 1.19.x. -->
+    <version.testcontainers>1.21.3</version.testcontainers>
+    <version.failsafe.plugin>${version.surefire.plugin}</version.failsafe.plugin>
+    <version.assembly.plugin>3.7.1</version.assembly.plugin>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${version.testcontainers}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>io.debezium</groupId>
+        <artifactId>debezium-bom</artifactId>
+        <version>${debezium.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>io.dropwizard.metrics</groupId>
+        <artifactId>metrics-core</artifactId>
+        <version>${version.codahale.metrics}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!-- compile scope: the wrapper sources extend the fork's PostgresConnector, and the
+         assembly profile packages this dependency into the connector plugin archive -->
+    <dependency>
+      <groupId>io.debezium</groupId>
+      <artifactId>debezium-connector-postgres</artifactId>
+      <version>${debezium.version}</version>
+      <scope>compile</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>com.zv</groupId>
+      <artifactId>zv-debezium-common</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.zv</groupId>
+      <artifactId>zv-debezium-common</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <classifier>tests</classifier>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Kafka Connect API surface used by the wrapper (Connector, ConfigDef, ConfigValue);
+         provided by the Connect runtime, hence NOT packaged into the plugin archive -->
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>connect-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- JDBC driver to seed/assert on the source database -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>${version.postgresql.driver}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Docker-backed test infrastructure -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Common test libs - versions managed by zv-monitor-parent -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>${version.failsafe.plugin}</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <profile>
+      <!-- mvn package -Passembly: builds the connector plugin tar.gz + zip -->
+      <id>assembly</id>
+      <build>
+        <plugins>
+          <!-- debezium.release.version = debezium.version minus -SNAPSHOT (used in artifact names) -->
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>build-helper-maven-plugin</artifactId>
+            <version>3.6.0</version>
+            <executions>
+              <execution>
+                <id>debezium-release-version</id>
+                <goals>
+                  <goal>regex-property</goal>
+                </goals>
+                <configuration>
+                  <name>debezium.release.version</name>
+                  <value>${debezium.version}</value>
+                  <regex>-SNAPSHOT$</regex>
+                  <replacement></replacement>
+                  <failIfNoMatch>false</failIfNoMatch>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-assembly-plugin</artifactId>
+            <version>${version.assembly.plugin}</version>
+            <executions>
+              <execution>
+                <id>assemble-connector-distribution</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>single</goal>
+                </goals>
+                <configuration>
+                  <descriptors>
+                    <descriptor>src/assembly/connector-distribution.xml</descriptor>
+                  </descriptors>
+                  <finalName>${project.artifactId}-${debezium.release.version}</finalName>
+                  <appendAssemblyId>false</appendAssemblyId>
+                  <attach>true</attach>
+                  <tarLongFileMode>posix</tarLongFileMode>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>

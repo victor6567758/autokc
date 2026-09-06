@@ -1,0 +1,6 @@
+FROM apache/kafka:3.7.0
+
+# agent from the jdbc packager image; --chmod: image runs as non-root appuser
+COPY --chmod=0644 --from=zv-debezium-connector-jdbc:dev /jmx-exporter/jmx_prometheus_javaagent.jar /opt/jmx_prometheus_javaagent.jar
+
+EXPOSE 9092 5559
