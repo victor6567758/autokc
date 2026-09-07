@@ -6,6 +6,8 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +17,12 @@ import java.util.Map;
  * code defaults &lt; classpath zv-monitor.yml &lt; environment variables.
  * The env layer keeps container wiring (docker-compose service DNS names,
  * intervals) working without rebuilding the jar.
+ *
+ * <p>Catalog file paths ({@code logs.patternsFile}, {@code metrics.patternsFile})
+ * are additionally resolved against the working directory with a
+ * {@code zv-monitor/} fallback, so the shipped relative defaults work for the
+ * container (CWD {@code /app}), module-dir runs and repo-root local runs
+ * ({@code make up-dev}) alike.
  */
 public record ZvMonitorConfig(
         String connectRestUrl,
@@ -53,11 +61,13 @@ public record ZvMonitorConfig(
                 envText(env, "LOKI_URL", text(root.at("/logs/lokiUrl"), "http://localhost:3100")),
                 envLong(env, "LOG_POLL_INTERVAL_MS", longValue(root.at("/logs/pollIntervalMs"), 10000)),
                 envLong(env, "LOG_LOOKBACK_SECONDS", longValue(root.at("/logs/lookbackSeconds"), 30)),
-                envText(env, "LOG_PATTERNS_FILE", text(root.at("/logs/patternsFile"), "analysis/loki-log-patterns.yaml")),
+                resolveCatalogPath(envText(env, "LOG_PATTERNS_FILE",
+                        text(root.at("/logs/patternsFile"), "analysis/loki-log-patterns.yaml"))),
                 envBool(env, "METRICS_EVENTS_ENABLED", boolValue(root.at("/metrics/enabled"), true)),
                 envText(env, "PROMETHEUS_URL", text(root.at("/metrics/prometheusUrl"), "http://localhost:9090")),
                 envLong(env, "METRICS_POLL_INTERVAL_MS", longValue(root.at("/metrics/pollIntervalMs"), 15000)),
-                envText(env, "METRIC_PATTERNS_FILE", text(root.at("/metrics/patternsFile"), "analysis/prometheus-metrics.yaml")));
+                resolveCatalogPath(envText(env, "METRIC_PATTERNS_FILE",
+                        text(root.at("/metrics/patternsFile"), "analysis/prometheus-metrics.yaml"))));
     }
 
     public ZvMonitorConfig {
@@ -82,6 +92,36 @@ public record ZvMonitorConfig(
                             + "/" + logPollIntervalMs + "/" + metricPollIntervalMs + "/" + logLookbackSeconds);
         }
         connectorNames = connectorNames == null ? List.of() : List.copyOf(connectorNames);
+    }
+
+    /**
+     * Resolves a catalog file location against the current working directory.
+     * The configured value wins when it exists (container: CWD {@code /app};
+     * module-dir runs); otherwise a {@code zv-monitor/}-prefixed copy is tried so
+     * the shipped defaults also work when the jar is launched from the repo root
+     * ({@code make up-dev} prints exactly such a command). When nothing matches,
+     * the configured value is returned unchanged so the startup error still
+     * names the path the user configured.
+     */
+    static String resolveCatalogPath(String configured) {
+        return resolveCatalogPath(configured, Path.of(""));
+    }
+
+    static String resolveCatalogPath(String configured, Path workingDir) {
+        if (configured == null || configured.isBlank()) {
+            return configured;
+        }
+        Path asConfigured = workingDir.resolve(configured).normalize();
+        if (Files.isRegularFile(asConfigured)) {
+            return configured;
+        }
+        if (!Path.of(configured).isAbsolute()) {
+            Path fromRepoRoot = workingDir.resolve(Path.of("zv-monitor", configured)).normalize();
+            if (Files.isRegularFile(fromRepoRoot)) {
+                return fromRepoRoot.toString();
+            }
+        }
+        return configured;
     }
 
     private static String text(JsonNode node, String fallback) {

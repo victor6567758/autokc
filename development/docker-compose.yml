@@ -146,10 +146,17 @@ services:
       additional_contexts:
         - lib=../lib
     image: zv-monitor:dev
+    # docker stop SIGTERMs the JVM (PID 1, exec-form ENTRYPOINT): the shutdown
+    # hook drains in-flight polls (up to 15s) and unregisters the JMX MBeans
+    # before the JVM exits. 20s leaves room before the SIGKILL.
+    stop_grace_period: 20s
+    # NOTE: deliberately no dependency on prometheus - prometheus depends on
+    # this service as one of its scrape targets, so a dep here would close a
+    # dependency cycle. zv-monitor polls PROMETHEUS_URL and simply retries
+    # until prometheus is up.
     depends_on:
       - kafka-connect
       - loki
-      - prometheus
     ports:
       - "5558:5558"   # Prometheus metrics
     environment:

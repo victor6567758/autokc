@@ -10,11 +10,14 @@ logs:
   # How far back the first poll of each pattern looks.
   lookbackSeconds: 30
   # LogPattern line-matching rules loaded at startup (com.zv.logs.LogPatternCatalog).
+  # Relative paths resolve against the working directory, with a zv-monitor/
+  # prefix fallback so repo-root runs (make up-dev) find the file too.
   patternsFile: analysis/loki-log-patterns.yaml
 
 metrics:
   enabled: true
   prometheusUrl: http://localhost:9090
   pollIntervalMs: 15000
-  # MetricPattern queries loaded at startup (com.zv.metrics.MetricPatternCatalog).
+  # MetricPattern queries loaded at startup (com.zv.metrics.MetricPatternCatalog);
+  # same working-directory + zv-monitor/ fallback resolution as logs.patternsFile.
   patternsFile: analysis/prometheus-metrics.yaml

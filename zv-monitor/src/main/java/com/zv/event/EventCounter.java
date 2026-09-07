@@ -87,6 +87,19 @@ public class EventCounter implements EventCounterMBean {
     }
   }
 
+  void unregister() {
+    try {
+      MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+      ObjectName name = new ObjectName(
+          "com.zv:type=EventCounter,source=" + source + ",pattern=" + patternId);
+      if (server.isRegistered(name)) {
+        server.unregisterMBean(name);
+      }
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to unregister EventCounter MBean for " + patternId, e);
+    }
+  }
+
   void recordHit(Event event) {
     lock.writeLock().lock();
     try {

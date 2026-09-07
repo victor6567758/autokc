@@ -31,17 +31,6 @@
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <maven.compiler.release>17</maven.compiler.release>
 
-    <!-- Integration tests (Docker-backed connector ITs) require the plugin
-         tarballs built by the -Passembly profile, so they are skipped by
-         default - "mvn clean install" only runs unit tests. Enable them
-         explicitly with the run-its profile (see <profiles> below):
-         mvn clean install -Passembly,run-its
-
-         Do NOT use -DskipITs=false instead: a command-line property applies
-         to every reactor module, including the zv-debezium fork, whose
-         upstream Debezium ITs expect their own docker-compose stack and fail
-         wholesale. The run-its profile is only inherited by this pom's
-         children, so the fork stays unaffected. -->
     <skipITs>true</skipITs>
 
     <!-- Common Java library versions, consumed by <dependencyManagement> below. -->
@@ -151,11 +140,6 @@
   </dependencyManagement>
 
   <build>
-    <!-- Unit tests live in the default src/test/java and run via surefire on
-          every build. Docker-backed ITs live in src/integration-test/java
-          (added as a second test root by build-helper in the module poms)
-          with IT-prefixed classes and run via failsafe only, gated by the
-          run-its profile (see the runbook note above). -->
 
     <plugins>
       <plugin>

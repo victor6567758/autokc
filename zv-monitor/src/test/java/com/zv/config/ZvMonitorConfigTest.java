@@ -4,11 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -21,6 +24,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ZvMonitorConfigTest {
 
     private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory());
+
+    @TempDir
+    Path workingDir;
 
     private static JsonNode yaml(String content) {
         try {
@@ -120,5 +126,33 @@ class ZvMonitorConfigTest {
                 () -> ZvMonitorConfig.of(yaml("connect: {restUrl: \"\"}"), Map.of()));
         assertThrows(IllegalArgumentException.class,
                 () -> ZvMonitorConfig.of(yaml("connect: {pollIntervalMs: 0}"), Map.of()));
+    }
+
+    @Test
+    void catalogPathUsedAsConfiguredWhenTheFileExists() throws IOException {
+        // container (CWD /app) and module-dir runs: analysis/ is right there
+        Files.createDirectories(workingDir.resolve("analysis"));
+        Files.writeString(workingDir.resolve("analysis/loki-log-patterns.yaml"), "patterns: []");
+
+        assertEquals("analysis/loki-log-patterns.yaml",
+                ZvMonitorConfig.resolveCatalogPath("analysis/loki-log-patterns.yaml", workingDir));
+    }
+
+    @Test
+    void catalogPathFallsBackToZvMonitorPrefixForRepoRootRuns() throws IOException {
+        // make up-dev prints a java -jar command run from the repo root
+        Files.createDirectories(workingDir.resolve("zv-monitor/analysis"));
+        Files.writeString(workingDir.resolve("zv-monitor/analysis/prometheus-metrics.yaml"), "subscribe: []");
+
+        assertEquals(workingDir.resolve("zv-monitor/analysis/prometheus-metrics.yaml"),
+                Path.of(ZvMonitorConfig.resolveCatalogPath("analysis/prometheus-metrics.yaml", workingDir)));
+    }
+
+    @Test
+    void unresolvableCatalogPathStaysAsConfiguredForAClearStartupError() {
+        assertEquals("analysis/missing.yaml",
+                ZvMonitorConfig.resolveCatalogPath("analysis/missing.yaml", workingDir));
+        assertEquals("/absolute/missing.yaml",
+                ZvMonitorConfig.resolveCatalogPath("/absolute/missing.yaml", workingDir));
     }
 }

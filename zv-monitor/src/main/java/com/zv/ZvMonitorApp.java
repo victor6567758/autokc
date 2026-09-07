@@ -10,6 +10,7 @@ import com.zv.event.EventCounterRegistry;
 import com.zv.event.EventSeverity;
 import com.zv.event.LoggingEventHandler;
 import com.zv.jmx.ConnectorHealth;
+import com.zv.lifecycle.GracefulShutdown;
 import com.zv.logs.LogEventPoller;
 import com.zv.logs.LogPattern;
 import com.zv.logs.LogPatternCatalog;
@@ -34,9 +35,23 @@ public class ZvMonitorApp {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ZvMonitorApp.class);
 
+    /** How long in-flight polls may finish before being interrupted at shutdown. */
+    private static final long SHUTDOWN_GRACE_MS = 10_000;
+    /** Extra wait after the interrupt, before giving up on the scheduler. */
+    private static final long SHUTDOWN_FORCE_GRACE_MS = 5_000;
+
     public static void main(String[] args) throws Exception {
         ZvMonitorConfig config = ZvMonitorConfig.load();
         LOGGER.info("zv-monitor config: {}", config);
+
+        // ---------------------------------------------------------- shutdown --
+        // GracefulShutdown parks main() and runs the cleanup steps below on
+        // SIGTERM (docker stop) / SIGINT (Ctrl-C) via the JVM shutdown hook -
+        // or when anything calls initiate() programmatically later (admin
+        // endpoint, self-check). Steps run in registration order: pollers
+        // stop before the MBeans they feed are unregistered.
+        GracefulShutdown shutdown = new GracefulShutdown();
+        Runtime.getRuntime().addShutdownHook(new Thread(shutdown::initiate, "zv-monitor-shutdown"));
 
         // -------------------------------------------------------------- events --
         // Single event bus: connector/task-status transitions (metrics path) and
@@ -44,8 +59,9 @@ public class ZvMonitorApp {
         // consumer - logging, JMX counters, and eventually an AI remediation
         // module - only has to deal with one shape of thing.
         EventBus eventBus = new EventBus();
+        EventCounterRegistry counterRegistry = new EventCounterRegistry();
         eventBus.register(new LoggingEventHandler());
-        eventBus.register(new EventCounterRegistry());
+        eventBus.register(counterRegistry);
 
         // ------------------------------------------------------- metrics path --
         ConnectClient client = new ConnectClient(config.connectRestUrl());
@@ -64,6 +80,8 @@ public class ZvMonitorApp {
         }
 
         ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(3);
+        shutdown.addStep("stop-pollers",
+                () -> stopScheduler(scheduler, SHUTDOWN_GRACE_MS, SHUTDOWN_FORCE_GRACE_MS));
         scheduler.scheduleAtFixedRate(() -> pollOnce(client, healthByConnector, remediationHandler, eventBus),
                 0, config.pollIntervalMs(), TimeUnit.MILLISECONDS);
 
@@ -91,11 +109,41 @@ public class ZvMonitorApp {
             LOGGER.info("metric events disabled (metrics.enabled=false) - skipping Prometheus-based metric events");
         }
 
+        shutdown.addStep("unregister-jmx-mbeans", () -> {
+            healthByConnector.values().forEach(ConnectorHealth::unregister);
+            counterRegistry.unregisterAll();
+        });
+
         LOGGER.info("Kafka Connector Monitor (zv-monitor) started. Polling every {}ms against {}",
                 config.pollIntervalMs(), config.connectRestUrl());
 
-        // Keep the JVM alive; JMX is exposed via the platform MBean server / JMX exporter agent.
-        Thread.currentThread().join();
+        // Park until the shutdown hook (or a programmatic initiate()) ran the
+        // steps above; the JVM then exits normally once main returns.
+        shutdown.await();
+        LOGGER.info("zv-monitor stopped");
+    }
+
+    /**
+     * Drains the shared poller scheduler: in-flight ticks (each an interruptible
+     * HttpClient call with 5-10s timeouts) get {@code graceMs} to finish, then
+     * {@code shutdownNow()} interrupts them and waits up to {@code forceGraceMs}
+     * more before giving up.
+     */
+    static void stopScheduler(ScheduledExecutorService scheduler, long graceMs, long forceGraceMs) {
+        scheduler.shutdown();
+        try {
+            if (scheduler.awaitTermination(graceMs, TimeUnit.MILLISECONDS)) {
+                return;
+            }
+            LOGGER.warn("Polls did not finish within {} ms - interrupting", graceMs);
+            scheduler.shutdownNow();
+            if (!scheduler.awaitTermination(forceGraceMs, TimeUnit.MILLISECONDS)) {
+                LOGGER.error("Scheduler did not terminate after interrupt; giving up");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            scheduler.shutdownNow();
+        }
     }
 
     private static void pollOnce(ConnectClient client, Map<String, ConnectorHealth> healthByConnector,

@@ -24,4 +24,20 @@ public class EventCounterRegistry implements EventHandler {
         });
         counter.recordHit(event);
     }
+
+    /**
+     * Unregisters every counter MBean created so far and forgets them, so the
+     * next event registers a fresh counter (no stale MBeans after a shutdown).
+     * Used by ZvMonitorApp's shutdown step.
+     */
+    public void unregisterAll() {
+        counters.forEach((key, counter) -> {
+            try {
+                counter.unregister();
+            } catch (RuntimeException e) {
+                // one bad ObjectName must not stop the rest from unregistering
+            }
+        });
+        counters.clear();
+    }
 }

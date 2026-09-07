@@ -35,6 +35,19 @@ public class ConnectorHealth implements ConnectorHealthMBean {
         }
     }
 
+    /** Undoes {@link #register()}; safe to call when not (or no longer) registered. */
+    public void unregister() {
+        try {
+            MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+            ObjectName name = new ObjectName("com.zv:type=ConnectorHealth,name=" + connectorName);
+            if (server.isRegistered(name)) {
+                server.unregisterMBean(name);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to unregister JMX MBean for " + connectorName, e);
+        }
+    }
+
     /** Called after each poll of the Connect REST API to refresh the exposed metrics. */
     public void update(ConnectorStatus status) {
         connectorState.set(status.connectorState());

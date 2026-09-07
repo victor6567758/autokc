@@ -40,4 +40,28 @@ class EventCounterRegistryTest {
         assertDoesNotThrow(() -> registry.onEvent(
                 Event.log("npe", EventSeverity.CRITICAL, "kafka-connect", "z", java.time.Instant.now())));
     }
+
+    @Test
+    void unregisterAllRemovesCountersAndNextHitRegistersFresh() throws Exception {
+        EventCounterRegistry registry = new EventCounterRegistry();
+        EventBus bus = new EventBus();
+        bus.register(registry);
+        registry.onEvent(Event.log("unregister-test", EventSeverity.CRITICAL, "kafka-connect", "hit",
+                java.time.Instant.now()));
+
+        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+        ObjectName name = new ObjectName("com.zv:type=EventCounter,source=log,pattern=unregister-test");
+        assertTrue(server.isRegistered(name));
+
+        registry.unregisterAll();
+
+        assertFalse(server.isRegistered(name));
+        // without unregisterAll a stale MBean would survive (register() skips
+        // already-registered names) and keep showing the old counter forever
+        registry.onEvent(Event.log("unregister-test", EventSeverity.CRITICAL, "kafka-connect", "hit-2",
+                java.time.Instant.now()));
+        assertTrue(server.isRegistered(name));
+        assertEquals(1L, server.getAttribute(name, "Count"));
+        assertEquals("hit-2", server.getAttribute(name, "LastMessage"));
+    }
 }

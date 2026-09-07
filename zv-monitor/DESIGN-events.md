@@ -73,12 +73,27 @@ purpose-built for it.
   way via `com.zv.metrics.MetricPatternCatalog` - both catalogs are plain
   YAML in the analysis folder, editable without a rebuild (paths: config
   `logs.patternsFile` / `metrics.patternsFile`, env `LOG_PATTERNS_FILE` /
-  `METRIC_PATTERNS_FILE`).
+  `METRIC_PATTERNS_FILE`; relative paths resolve against the working
+  directory with a `zv-monitor/` fallback, so the same defaults work in the
+  container (CWD `/app`), module-dir runs and repo-root local runs).
 - `connector_health_*` (existing) and `zv_event_counter_*` (new) Prometheus
   series, both via the same JMX-exporter-on-the-sidecar pattern already used
   for `ConnectorHealth`.
 - Loki + Promtail added to both compose files; Grafana gets a Loki
   datasource alongside the existing Prometheus one.
+
+## Shutdown
+
+`ZvMonitorApp` parks on `GracefulShutdown.await()` (`com.zv.lifecycle`), not
+`Thread.currentThread().join()`. The JVM shutdown hook - fired by SIGTERM
+(`docker stop`, 20s grace in compose) or SIGINT (Ctrl-C) - runs the registered
+steps in order: stop the shared poller scheduler (in-flight Loki/Prometheus/
+Connect ticks get 10s to finish, then they are interrupted - `HttpClient.send`
+is interruptible - and 5s more), then unregister the `ConnectorHealth` /
+`EventCounter` MBeans. Each step is guarded, one failing step never blocks the
+rest, and `initiate()` is idempotent, so a future admin endpoint can trigger
+exactly the same path as a signal; once it completes, `main` returns and the
+JVM exits normally.
 
 ## What's deliberately left as a stub / next step
 

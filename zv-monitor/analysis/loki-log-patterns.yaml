@@ -1,17 +1,4 @@
-# Log side of the "not all, filtered" idea - the metric side lives in the
-# neighbouring prometheus-metrics.yaml. Small, high-signal set of line
-# signatures that grows from observed failures, not a general-purpose search.
-#
-# RUNTIME SOURCE: com.zv.logs.LogPatternCatalog loads this file verbatim at
-# startup (config logs.patternsFile / env LOG_PATTERNS_FILE). Each entry
-# becomes one LogQL query polled against Loki; a matched line becomes an
-# Event. Edit + restart zv-monitor - no rebuild needed.
-#
-# Field semantics (mirrors com.zv.logs.LogPattern):
-#   severity    - one of CRITICAL / WARNING / INFO
-#   containers  - regex over Promtail's docker-compose "service" label
-#   regex       - line matcher; case-sensitivity is up to the regex itself
-#                 (use "(?i)" prefix for case-insensitive matches)
+
 patterns:
   - id: npe
     description: NullPointerException in a Connect worker/task

@@ -4,6 +4,9 @@ import com.zv.connect.ConnectorStatus;
 import com.zv.connect.TaskStatus;
 import org.junit.jupiter.api.Test;
 
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
+import java.lang.management.ManagementFactory;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -50,5 +53,19 @@ class ConnectorHealthTest {
 
         assertEquals(1, health.getHealthy());
         assertEquals(0, health.getConsecutiveFailures());
+    }
+
+    @Test
+    void unregisterRemovesTheMBeanAndIsSafeToRepeat() throws Exception {
+        ConnectorHealth health = new ConnectorHealth("test-unregister-target");
+        health.register();
+        MBeanServer server = ManagementFactory.getPlatformMBeanServer();
+        ObjectName name = new ObjectName("com.zv:type=ConnectorHealth,name=test-unregister-target");
+        assertTrue(server.isRegistered(name));
+
+        health.unregister();
+        health.unregister();
+
+        assertFalse(server.isRegistered(name));
     }
 }
