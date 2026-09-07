@@ -14,10 +14,10 @@ rows in the Postgres, the stack's single database in its CDC-target role.
 ## Integration tests
 
 ```bash
-mvn verify -Passembly -pl zv-debezium-connector-jdbc
+mvn verify -Passembly,run-its -pl zv-debezium-connector-jdbc
 ```
 
-- `PostgresSinkIT` — produces Debezium change-event envelopes (create /
+- `ITPostgresSink` — produces Debezium change-event envelopes (create /
   update / delete + tombstone, plus auto-create, upsert and auto-evolve
   cases) onto Kafka topics and asserts the resulting rows via JDBC; the
   connector runs with `insert.mode=upsert`, `delete.enabled=true`,

@@ -193,10 +193,13 @@ the handler has what it needs without touching the polling loop.
 `.github/workflows/ci.yml` is currently a placeholder. The intended jobs,
 mirroring the local workflow:
 
-- **connector modules**: `mvn verify -Passembly` for
-  `zv-debezium-common` / `zv-debezium-connector-postgres` /
-  `zv-debezium-connector-jdbc`
-  (unit + Testcontainers integration tests).
+- **connector modules**: `mvn clean verify -Passembly,run-its -pl
+  zv-debezium-connector-postgres,zv-debezium-connector-jdbc` (unit +
+  Testcontainers integration tests). `run-its` is a root-pom opt-in profile;
+  the zv-debezium fork does not inherit it, so Debezium's upstream IT suite
+  stays skipped. Never substitute a global `-DskipITs=false` - it applies to
+  every reactor module, enables the fork's ITs, and those expect their own
+  docker-compose Postgres on localhost:5432 and fail wholesale.
 - **zv-monitor**: `mvn verify`.
 - **integration smoke**: `make up` +
   `timeout 90 scripts/simulate-changes.sh` - the generator runs until

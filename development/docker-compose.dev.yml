@@ -122,6 +122,26 @@ services:
 
   # (no zv-monitor service in this stack - it runs on your host)
 
+  # -------------------------------------------------------------- Loki --
+  # Same role as in docker-compose.yml. When running zv-monitor on the host,
+  # export LOKI_URL=http://localhost:3100 (port is published below).
+  loki:
+    image: grafana/loki:2.9.4
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+
+  promtail:
+    image: grafana/promtail:2.9.4
+    depends_on:
+      - loki
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./monitoring/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+    command: ["-config.file=/etc/promtail/config.yml"]
+
   # ------------------------------------------------------------- Kafka UI --
   kafka-ui:
     image: provectuslabs/kafka-ui:v0.7.2

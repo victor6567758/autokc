@@ -1,0 +1,20 @@
+connect:
+  restUrl: http://localhost:8083
+  connectorNames: []
+  pollIntervalMs: 5000
+
+logs:
+  enabled: true
+  lokiUrl: http://localhost:3100
+  pollIntervalMs: 10000
+  # How far back the first poll of each pattern looks.
+  lookbackSeconds: 30
+  # LogPattern line-matching rules loaded at startup (com.zv.logs.LogPatternCatalog).
+  patternsFile: analysis/loki-log-patterns.yaml
+
+metrics:
+  enabled: true
+  prometheusUrl: http://localhost:9090
+  pollIntervalMs: 15000
+  # MetricPattern queries loaded at startup (com.zv.metrics.MetricPatternCatalog).
+  patternsFile: analysis/prometheus-metrics.yaml

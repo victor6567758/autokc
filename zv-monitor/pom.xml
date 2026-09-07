@@ -28,10 +28,24 @@
       <artifactId>lombok</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!-- Shared utilities from the common module (YamlCatalogReader for the
+         log/metric pattern catalogs); its own Jackson is declared below, the
+         common module only needs it at compile time. -->
+    <dependency>
+      <groupId>com.zv</groupId>
+      <artifactId>zv-debezium-common</artifactId>
+      <version>${project.version}</version>
+    </dependency>
     <!-- JSON parsing of the Kafka Connect REST API responses -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
+    </dependency>
+
+    <!-- YAML parsing of the classpath zv-monitor.yml config -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.dataformat</groupId>
+      <artifactId>jackson-dataformat-yaml</artifactId>
     </dependency>
 
     <!-- Lightweight logging -->
@@ -55,10 +69,6 @@
   <build>
     <finalName>zv-monitor</finalName>
     <plugins>
-      <!-- Regenerate zv-monitor/analysis connector parameter YAMLs from the
-           zv-debezium sources on every build. Requires python3 plus the parser
-           packages listed in utils/requirements.txt (tree-sitter-java, PyYAML):
-           pip3 install -r utils/requirements.txt -->
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>

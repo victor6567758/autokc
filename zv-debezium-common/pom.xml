@@ -123,16 +123,46 @@
       <!-- provided: also a compile-time dep of main sources (via connect-api) -->
       <scope>provided</scope>
     </dependency>
+    <!-- Jackson (tree model + YAML) for YamlCatalogReader in main sources.
+          Provided: consumers that use the reader (zv-monitor) declare their
+          own Jackson, and the connector plugin assemblies must not package
+          any of it (the Connect runtime brings jackson-databind). Provided
+          also covers this module's own test classpath. -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
-      <scope>test</scope>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.dataformat</groupId>
+      <artifactId>jackson-dataformat-yaml</artifactId>
+      <scope>provided</scope>
     </dependency>
   </dependencies>
 
   <build>
     <plugins>
-      <!-- Runs the Docker-backed ITs (**/*IT.java) -->
+      <!-- Adds src/integration-test/java (IT* classes + shared IT helpers) on
+           top of the default src/test/java test source root. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>add-integration-test-source</id>
+            <phase>generate-test-sources</phase>
+            <goals>
+              <goal>add-test-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>${project.basedir}/src/integration-test/java</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Runs the Docker-backed ITs (src/integration-test/java, IT*.java) -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
@@ -140,6 +170,11 @@
         <!-- NOTE for Docker Engine 29+ hosts (minimum API 1.40): docker-java
               still sends API v1.32 by default and Testcontainers fails to
               connect: echo 'api.version=1.44' >> ~/.docker-java.properties -->
+        <configuration>
+          <includes>
+            <include>**/IT*.java</include>
+          </includes>
+        </configuration>
         <executions>
           <execution>
             <goals>
@@ -149,7 +184,8 @@
           </execution>
         </executions>
       </plugin>
-      <!-- Publish src/test/java as the tests-classifier test-jar, so the
+      <!-- Publish the compiled test classes (unit tests + the IT helpers from
+           src/integration-test/java) as the tests-classifier test-jar, so the
            connector ITs can share TestUtils without copy-pasting it. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

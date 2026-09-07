@@ -66,14 +66,7 @@ import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.PortBinding;
 import com.github.dockerjava.api.model.Ports;
 
-/**
- * Shared IT base: spins the full stack on a private Docker network - Kafka
- * (apache/kafka:3.7.0 KRaft), a single Postgres 16 with {@code wal_level=logical},
- * and a Connect worker built from the module's plugin tarball
- * ({@code mvn verify -Passembly}). Shipped in the zv-debezium-common test-jar;
- * subclasses deploy connectors via {@link #createConnector} and assert outcomes
- * via Kafka ({@link #waitForRecords}) or SQL ({@link #openDbConnection}).
- */
+
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public abstract class ZvDebeziumITBase {
 
@@ -85,12 +78,10 @@ public abstract class ZvDebeziumITBase {
     public static final String KAFKA_ALIAS = "kafka";
     public static final String KAFKA_CONNECT_ALIAS = "kafka-connect";
     public static final String POSTGRES_ALIAS = "postgres";
-
-    // Kafka listener layout (like development/docker-compose.yml).
     public static final int KAFKA_INTERNAL_PORT = 29092;   // PLAINTEXT, in-network
     public static final int KAFKA_HOST_PORT = 9092;        // PLAINTEXT_HOST, bound to a free host port
-
     public static final int KAFKA_CONNECT_PORT = 8083;     // Connect REST API
+    public static final int KAFKA_CONNECT_DEBUG_PORT = 5005;
 
     // The single Postgres shared by all tests of a class.
     public static final String DB_NAME = "zvdb";
@@ -166,9 +157,7 @@ public abstract class ZvDebeziumITBase {
         List<GenericContainer<?>> containers = new ArrayList<>(List.of(kafka, postgres));
 
         // Kafka Connect worker
-        Path pluginTarball = findPluginTarball().orElseThrow(() -> new IllegalStateException(
-                "No plugin tarball (target/zv-debezium-connector-*.tar.gz) found - the connector ITs deploy the "
-                        + "plugin into a real Connect worker. Run the build with 'mvn verify -Passembly'."));
+        Path pluginTarball = findPluginTarball().orElseThrow(() -> new IllegalStateException("No plugin tarball (target/zv-debezium-connector-*.tar.gz) found "));
         LOGGER.info("Building Kafka Connect worker image from plugin tarball {}", pluginTarball);
         kafkaConnect = connectWorkerContainer(pluginTarball);
         containers.add(kafkaConnect);
@@ -210,7 +199,7 @@ public abstract class ZvDebeziumITBase {
                         .env("KAFKA_HEAP_OPTS", "-Xms256m -Xmx1g")
                         .expose(KAFKA_CONNECT_PORT)
                         .build());
-        return new GenericContainer<>(image)
+        FixedPortContainer worker = new FixedPortContainer(image)
                 .withNetwork(network)
                 .withNetworkAliases(KAFKA_CONNECT_ALIAS)
                 .withExposedPorts(KAFKA_CONNECT_PORT)
@@ -223,6 +212,53 @@ public abstract class ZvDebeziumITBase {
                 .waitingFor(Wait.forHttp("/connectors")
                         .forPort(KAFKA_CONNECT_PORT)
                         .withStartupTimeout(STARTUP_TIMEOUT));
+        if (connectDebugEnabled()) {
+            enableConnectDebugging(worker);
+        }
+        return worker;
+    }
+
+    /**
+     * Opens the worker JVM for remote debugging: JDWP listens inside the container and its port is
+     * published to a fixed host port, so an IDE remote-debugger config (localhost:5005) can attach
+     * to the connector code running there (streamkap {@code KafkaFacade}'s {@code debugKCExpose}).
+     */
+    private void enableConnectDebugging(FixedPortContainer worker) {
+        boolean suspend = connectDebugSuspend();
+        // connect-distributed.sh -> kafka-run-class.sh appends KAFKA_JVM_PERFORMANCE_OPTS to the
+        // worker JVM command line, so the jdwp agent rides along (heap stays on KAFKA_HEAP_OPTS).
+        worker.withEnv("KAFKA_JVM_PERFORMANCE_OPTS",
+                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=" + (suspend ? "y" : "n")
+                        + ",address=*:" + KAFKA_CONNECT_DEBUG_PORT);
+        // addFixedExposedPort (not a CreateContainerCmd port-binding override) so Testcontainers
+        // keeps its own random host binding for the exposed REST port and merely adds this one.
+        worker.publishFixedPort(KAFKA_CONNECT_DEBUG_PORT, KAFKA_CONNECT_DEBUG_PORT);
+        LOGGER.info("Connect worker remote debugging: attach a JDWP debugger to localhost:{} (suspend={})",
+                KAFKA_CONNECT_DEBUG_PORT, suspend);
+    }
+
+    /** Subclassing merely exposes Testcontainers' protected {@code addFixedExposedPort} (see {@link #enableConnectDebugging}). */
+    private static final class FixedPortContainer extends GenericContainer<FixedPortContainer> {
+
+        FixedPortContainer(ImageFromDockerfile image) {
+            super(image);
+        }
+
+        void publishFixedPort(int hostPort, int containerPort) {
+            addFixedExposedPort(hostPort, containerPort);
+        }
+    }
+
+    private static boolean connectDebugEnabled() {
+        return Boolean.parseBoolean(flag("zv.it.debug.connect", "IT_DEBUG_CONNECT"));
+    }
+
+    private static boolean connectDebugSuspend() {
+        return Boolean.parseBoolean(flag("zv.it.debug.connect.suspend", "IT_DEBUG_CONNECT_SUSPEND"));
+    }
+
+    private static String flag(String systemProperty, String envVar) {
+        return System.getProperty(systemProperty, System.getenv().getOrDefault(envVar, "false"));
     }
 
     /** Worker properties; override to adapt source vs sink worker setups. */

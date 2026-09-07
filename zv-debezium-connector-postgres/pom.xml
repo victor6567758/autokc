@@ -148,10 +148,35 @@
 
   <build>
     <plugins>
+      <!-- Adds src/integration-test/java (IT* classes) on top of the default
+           src/test/java test source root. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>add-integration-test-source</id>
+            <phase>generate-test-sources</phase>
+            <goals>
+              <goal>add-test-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>${project.basedir}/src/integration-test/java</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
         <version>${version.failsafe.plugin}</version>
+        <configuration>
+          <includes>
+            <include>**/IT*.java</include>
+          </includes>
+        </configuration>
         <executions>
           <execution>
             <goals>

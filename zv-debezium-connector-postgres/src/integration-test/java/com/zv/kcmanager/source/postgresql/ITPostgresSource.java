@@ -26,7 +26,7 @@ import com.zv.kcmanager.common.util.TestUtils;
  * Connect REST API of the shared stack, mutates the source DB with SQL and
  * asserts the change events on Kafka.
  */
-public class PostgresSourceIT extends ZvDebeziumITBase {
+public class ITPostgresSource extends ZvDebeziumITBase {
 
     private static final String CONNECTOR_CLASS = "com.zv.kcmanager.source.postgresql.ZvPostgresSourceConnector";
     private static final ObjectMapper MAPPER = new ObjectMapper();

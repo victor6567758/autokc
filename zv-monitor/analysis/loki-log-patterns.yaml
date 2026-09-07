@@ -1,0 +1,62 @@
+# Log side of the "not all, filtered" idea - the metric side lives in the
+# neighbouring prometheus-metrics.yaml. Small, high-signal set of line
+# signatures that grows from observed failures, not a general-purpose search.
+#
+# RUNTIME SOURCE: com.zv.logs.LogPatternCatalog loads this file verbatim at
+# startup (config logs.patternsFile / env LOG_PATTERNS_FILE). Each entry
+# becomes one LogQL query polled against Loki; a matched line becomes an
+# Event. Edit + restart zv-monitor - no rebuild needed.
+#
+# Field semantics (mirrors com.zv.logs.LogPattern):
+#   severity    - one of CRITICAL / WARNING / INFO
+#   containers  - regex over Promtail's docker-compose "service" label
+#   regex       - line matcher; case-sensitivity is up to the regex itself
+#                 (use "(?i)" prefix for case-insensitive matches)
+patterns:
+  - id: npe
+    description: NullPointerException in a Connect worker/task
+    severity: CRITICAL
+    containers: 'kafka-connect'
+    regex: '(?i)nullpointerexception'
+
+  - id: oom
+    description: OutOfMemoryError in any JVM/Postgres process
+    severity: CRITICAL
+    containers: 'kafka-connect|kafka|postgres-source|postgres-sink'
+    regex: '(?i)outofmemoryerror'
+
+  - id: task-uncaught-exception
+    description: Connect task died with an uncaught exception
+    severity: CRITICAL
+    containers: 'kafka-connect'
+    regex: 'Task threw an uncaught and unrecoverable exception|WorkerSinkTask.*Task threw an exception|WorkerSourceTask.*Task threw an exception'
+
+  - id: postgres-fatal
+    description: Postgres FATAL log entry (auth, config, resource limits)
+    severity: CRITICAL
+    containers: 'postgres-source|postgres-sink'
+    regex: 'FATAL:'
+
+  - id: postgres-connection-terminated
+    description: Postgres closed/lost a client connection
+    severity: WARNING
+    containers: 'postgres-source|postgres-sink'
+    regex: 'terminating connection|could not receive data from client|unexpected EOF on client connection|connection reset by peer'
+
+  - id: jdbc-connection-error
+    description: Connect worker failed to reach Postgres over JDBC
+    severity: CRITICAL
+    containers: 'kafka-connect'
+    regex: '(?i)PSQLException|[Cc]onnection to .* refused|the connection attempt failed'
+
+  - id: kafka-broker-unreachable
+    description: A Kafka client (Connect worker or broker) can't reach a broker
+    severity: WARNING
+    containers: 'kafka-connect|kafka'
+    regex: 'Connection to node .* could not be established|Broker may not be available|DisconnectException'
+
+  - id: replication-slot-issue
+    description: Debezium/Postgres replication slot problem on the source
+    severity: CRITICAL
+    containers: 'kafka-connect|postgres-source'
+    regex: 'replication slot .* is active|logical replication slot .* does not exist|ReplicationSlotAlreadyExistsException'

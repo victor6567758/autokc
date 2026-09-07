@@ -7,6 +7,11 @@ COPY --chmod=0644 --from=lib jmx_prometheus_javaagent-${JMX_EXPORTER_VERSION}.ja
 
 COPY target/zv-monitor.jar /app/zv-monitor.jar
 
+# Pattern catalogs for log/metric events, loaded at startup relative to /app
+# (logs.patternsFile / metrics.patternsFile). Compose bind-mounts the live
+# analysis/ folder over this copy for edit-and-restart without a rebuild.
+COPY analysis/ /app/analysis/
+
 EXPOSE 5558
 ENTRYPOINT ["java", \
   "-javaagent:/app/jmx_prometheus_javaagent.jar=5558:/app/jmx-exporter-config.yml", \

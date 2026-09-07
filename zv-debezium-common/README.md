@@ -18,6 +18,25 @@ Code shared by the two connector modules (`zv-debezium-connector-postgres`,
 `tests`-classifier test-jar (the two connectors depend on it `test`-scoped);
 the base class itself is exercised end-to-end by the connector modules' ITs.
 
+## Remote debugging the Connect worker
+
+The worker container accepts an IDE remote debugger so connector code can be
+stepped through inside the real Connect runtime. Opt in per run (off by
+default, tests behave identically without it):
+
+    mvn verify -Passembly,run-its -pl zv-debezium-connector-postgres \
+        -Dit.test=ITPostgresSource -Dzv.it.debug.connect=true
+
+The worker JVM then starts with
+`-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005`
+(via `KAFKA_JVM_PERFORMANCE_OPTS`) and port 5005 is published to the host on
+the same fixed port — attach a JDWP remote-debug config to `localhost:5005`.
+Breakpoints can be set any time; add
+`-Dzv.it.debug.connect.suspend=true` (or env `ZV_IT_DEBUG_CONNECT=1` /
+`ZV_IT_DEBUG_CONNECT_SUSPEND=1`) to hold the worker at JVM startup until the
+debugger attaches. Run one IT class per debug session — the host port is
+fixed, so parallel classes would collide.
+
 ## Packaging
 
 The main jar is a `runtime` dependency of both connectors, so their

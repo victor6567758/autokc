@@ -11,6 +11,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 
+import lombok.AccessLevel;
+import lombok.RequiredArgsConstructor;
+
 import org.awaitility.Awaitility;
 
 /**
@@ -18,10 +21,8 @@ import org.awaitility.Awaitility;
  * in the spirit of streamkap's {@code TestUtils}
  * ({@code runSQL} / {@code querySQL} / {@code assertSQL}).
  */
+@RequiredArgsConstructor(access = AccessLevel.PRIVATE)
 public final class TestUtils {
-
-    private TestUtils() {
-    }
 
     public static void runSQL(Connection connection, String sql) {
         try (Statement statement = connection.createStatement()) {

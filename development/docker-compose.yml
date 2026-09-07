@@ -114,9 +114,31 @@ services:
       timeout: 3s
       retries: 12
 
+  # -------------------------------------------------------------- Loki --
+  # Log storage: Promtail ships every container's stdout/stderr here.
+  # Grafana queries it directly (Explore / log panels); zv-monitor also
+  # polls it with a small set of LogQL queries to turn matching lines
+  # (NPEs, Postgres disconnects, ...) into Events - see com.zv.logs.
+  loki:
+    image: grafana/loki:2.9.4
+    ports:
+      - "3100:3100"   # LogQL HTTP API - also used by zv-monitor
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+
+  promtail:
+    image: grafana/promtail:2.9.4
+    depends_on:
+      - loki
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./monitoring/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+    command: ["-config.file=/etc/promtail/config.yml"]
+
   # ---------------------------------------------------------- zv-monitor --
   # Kafka Connector Monitor: polls Connect REST, exposes connector health as
-  # JMX metrics on :5558.
+  # JMX metrics on :5558, and polls Loki for a filtered set of log signatures.
   zv-monitor:
     build:
       context: ../zv-monitor
@@ -126,6 +148,8 @@ services:
     image: zv-monitor:dev
     depends_on:
       - kafka-connect
+      - loki
+      - prometheus
     ports:
       - "5558:5558"   # Prometheus metrics
     environment:
@@ -133,8 +157,17 @@ services:
       # Leave CONNECTOR_NAMES unset to auto-discover, or pin explicitly:
       CONNECTOR_NAMES: "inventory-source,customers-sink"
       POLL_INTERVAL_MS: "5000"
+      LOKI_URL: http://loki:3100
+      LOG_POLL_INTERVAL_MS: "10000"
+      LOG_LOOKBACK_SECONDS: "30"
+      PROMETHEUS_URL: http://prometheus:9090
+      METRICS_POLL_INTERVAL_MS: "15000"
     volumes:
       - ./monitoring/jmx-exporter/zv-monitor-jmx.yml:/app/jmx-exporter-config.yml:ro
+      # Log/metric pattern catalogs (analysis/*.yaml): edit on the host, picked
+      # up on container restart - no image rebuild needed. Defaults are baked
+      # into the image by the Dockerfile COPY.
+      - ../zv-monitor/analysis:/app/analysis:ro
 
   # ------------------------------------------------------------- Kafka UI --
   kafka-ui:

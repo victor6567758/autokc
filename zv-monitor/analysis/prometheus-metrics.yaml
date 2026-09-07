@@ -1,0 +1,201 @@
+# Curated minimum of Prometheus metrics worth SUBSCRIBING to (turning into
+# zv-monitor Events). Hand-maintained - the opposite of the neighbouring
+# *-connector-params.yaml files, which are generated on every build by
+# utils/gen_connector_params.py and never touch this file.
+#
+# Metric side of the "not all, filtered" idea - the log side lives in the
+# neighbouring loki-log-patterns.yaml. Same philosophy: small, high-signal set
+# that grows from observed failures, not a general-purpose scrape.
+#
+# RUNTIME SOURCE: the 'subscribe:' section below is what zv-monitor actually
+# runs. com.zv.metrics.MetricPatternCatalog loads it verbatim at startup
+# (config metrics.patternsFile / env METRIC_PATTERNS_FILE); id/severity/
+# container/promql/fires map onto MetricPattern, every other key (origin,
+# metric, labels, notes, verify) is documentation for humans.
+# Edit + restart zv-monitor - no rebuild needed.
+#
+# Name provenance - every metric below was verified against either
+# development/monitoring/grafana/dashboards/pipeline-health.json (built against
+# the live stack) or the vendored zv-debezium sources. Naming rules:
+#   - explicit rules in monitoring/jmx-exporter/*.yml -> clean names
+#     (kafka_connect_*, zv_sql_*, connector_health_*, zv_event_counter_*);
+#     attr hyphens become underscores (source-record-poll-rate ->
+#     source_record_poll_rate), camelCase is only lowercased.
+#   - everything else falls through the catch-all `.*` rule -> default format
+#     <domain>_<type>_<attribute>, all lowercase (camelCase NOT snake-cased:
+#     MilliSecondsBehindSource -> millisecondsbehindsource); remaining MBean
+#     properties become labels (context, server, client_id, ...).
+#     debezium_postgres_* / debezium_jdbc_* / kafka_consumer_* names below are
+#     that kind - stable, but re-check them if the Debezium fork is rebased.
+#
+# Verify live (after `make up-dev && make connectors`):
+#   curl -s localhost:5557/metrics | grep -E '^(debezium_|kafka_connect_|kafka_consumer_|zv_sql_)' | sort
+#   curl -s localhost:5559/metrics | grep -E '^(kafka_server_|kafka_controller_)' | sort
+#   curl -s localhost:9090/api/v1/query --data-urlencode 'query=kafka_connect_task_status' | jq .
+# (job -> target map, scrape every 10s: kafka-connect -> kafka-connect:5557,
+#  kafka-broker -> kafka:5559, zv-monitor -> host.docker.internal:5558 when
+#  running on the host per prometheus.dev.yml.)
+
+# ---------------------------------------------------------------- subscribe --
+# The important minimum. Each entry = one query + one Event. Thresholds live in
+# the promql so MetricsEventPoller can be a dumb "/api/v1/query" evaluator.
+# Transient-gauge conditions are wrapped in max_over_time(...[2m]): with the
+# 10s scrape / 15s poll, a spike visible in one sample could dip back below
+# threshold between polls and never fire. The 2m window keeps it firing and
+# delays recovery by up to 2m (free hysteresis; the poller's per-series edge
+# detection prevents re-firing while overlapping windows still see the spike).
+subscribe:
+  - id: task-not-running
+    severity: CRITICAL
+    origin: kafka-connect:5557
+    container: kafka-connect
+    metric: kafka_connect_task_status
+    labels: [connector, task, status]   # one series per (task, status), value 1
+    promql: 'kafka_connect_task_status{status!="running"} == 1'
+    fires: a task reports PAUSED/FAILED/UNASSIGNED/DESTROYED
+    notes: REST poller already emits connector-unhealthy - treat this as the
+      metric-side cross-check; reconcile to one notification, not two.
+
+  - id: source-disconnected
+    severity: CRITICAL
+    origin: kafka-connect:5557
+    container: kafka-connect
+    metric: debezium_postgres_connector_metrics_connected
+    labels: {context: streaming, server: <topic.prefix>}
+    promql: 'debezium_postgres_connector_metrics_connected{context="streaming"} == 0'
+    fires: the streaming replication connection to Postgres is down
+    notes: the earliest hard signal of a dropped replication connection;
+      pairs with the replication-slot-issue log pattern.
+
+  - id: source-stream-stalled
+    severity: WARNING
+    origin: kafka-connect:5557
+    container: kafka-connect
+    metric: debezium_postgres_connector_metrics_millisecondssincelastevent
+    labels: {context: streaming, server: <topic.prefix>}
+    promql: 'max_over_time(debezium_postgres_connector_metrics_millisecondssincelastevent{context="streaming"}[2m]) > 60000'
+    fires: no source event for 60 s (dashboard red threshold)
+    notes: also climbs on an idle source - judge with `make simulate` running,
+      or via source.record.poll.rate below; heartbeats would fix the ambiguity.
+      Transient gauge - hence the max_over_time[2m] wrap (see banner).
+
+  - id: source-lag-high
+    severity: WARNING
+    origin: kafka-connect:5557
+    container: kafka-connect
+    metric: debezium_postgres_connector_metrics_millisecondsbehindsource
+    labels: {context: streaming, server: <topic.prefix>}
+    promql: 'max_over_time(debezium_postgres_connector_metrics_millisecondsbehindsource{context="streaming"}[2m]) > 300000'
+    fires: CDC lag behind the source exceeded 5 min (threshold arbitrary, tune)
+    notes: transient gauge - hence the max_over_time[2m] wrap (see banner).
+
+  - id: source-disconnect-loop
+    severity: WARNING
+    origin: kafka-connect:5557
+    container: kafka-connect
+    metric: debezium_postgres_connector_metrics_numberofdisconnects
+    labels: {context: streaming, server: <topic.prefix>}
+    promql: 'increase(debezium_postgres_connector_metrics_numberofdisconnects{context="streaming"}[5m]) > 1'
+    fires: repeated replication disconnects even if each reconnects
+    verify: attr exists for the pg connector - confirm on :5557 while
+      restarting postgres-source.
+
+  - id: snapshot-aborted
+    severity: CRITICAL
+    origin: kafka-connect:5557
+    container: kafka-connect
+    metric: debezium_postgres_connector_metrics_snapshotaborted
+    labels: {context: snapshot, server: <topic.prefix>}
+    promql: 'max_over_time(debezium_postgres_connector_metrics_snapshotaborted{context="snapshot"}[2m]) == 1'
+    fires: a snapshot was aborted (failed and will NOT retry by default)
+    notes: latch-style boolean - stays 1 until the next snapshot attempt;
+      emit on the 0 -> 1 edge only. The max_over_time[2m] wrap keeps an abort
+      visible even if the latch resets before the next poll catches it.
+
+  - id: sink-consumer-lag-high
+    severity: WARNING
+    origin: kafka-connect:5557
+    container: kafka-connect
+    metric: kafka_consumer_consumer_fetch_manager_metrics_records_lag_max
+    labels: [client_id]                 # connector-consumer-<connector>-<task>
+    promql: 'max_over_time(kafka_consumer_consumer_fetch_manager_metrics_records_lag_max{client_id=~"connector-consumer-.*"}[2m]) > 1000'
+    fires: the JDBC sink's consumer is falling behind (records behind, threshold
+      arbitrary - tune per table size)
+    notes: the only sink-side lag signal; complements source-lag-high.
+      Transient gauge - hence the max_over_time[2m] wrap (see banner).
+
+  - id: worker-rebalance-loop
+    severity: WARNING
+    origin: kafka-connect:5557
+    container: kafka-connect
+    metric: kafka_connect_worker_rebalance_rebalance_total
+    promql: 'increase(kafka_connect_worker_rebalance_rebalance_total[10m]) > 3'
+    fires: the worker keeps rebalancing (connectors flap, tasks restart)
+    notes: noisy in dev - every `make connectors` and broker restart
+      rebalances; keep the window/threshold generous.
+
+  - id: zv-sql-failed
+    severity: CRITICAL
+    origin: kafka-connect:5557
+    container: kafka-connect
+    metric: zv_sql_failures_total
+    labels: [connector]                 # no statement label for runs/failures
+    promql: 'increase(zv_sql_failures_total[2m]) > 0'
+    fires: the zv SQL resource (health.sql) failed on the worker - the fork's
+      own replication-slot/WAL probe is broken (perms, pg_stat-slots, ...)
+
+  - id: slot-wal-retention-high
+    severity: WARNING
+    origin: kafka-connect:5557
+    container: kafka-connect
+    metric: zv_sql_wal_lsn_diff
+    labels: [connector, statement]      # statement = SQL resource name (health)
+    promql: 'zv_sql_wal_lsn_diff > 1073741824'
+    fires: replication slot retains > 1 GiB WAL (dashboard red threshold) -
+      source is down or lagging and Postgres is piling up WAL
+    notes: metric name comes from the SQL *column* (wal_lsn_diff); the parked
+      health.sql -> wal_lag.sql file rename alone does NOT change it.
+
+# -------------------------------------------------------------- observe-only --
+# Kept for correlation/dashboards (already on pipeline-health.json); not
+# events by themselves.
+observe:
+  - metric: kafka_connect_source_task_metrics_source_record_poll_rate
+    labels: [connector, task]
+    why: is the source actually polling; disambiguates source-stream-stalled
+  - metric: kafka_connect_source_task_metrics_source_record_write_rate
+    labels: [connector, task]
+    why: records handed to Kafka (poll vs write gap = converter/SMT trouble)
+  - metric: kafka_connect_sink_task_metrics_sink_record_read_rate
+    labels: [connector, task]
+    why: sink throughput; flat 0 while source writes => candidate
+      sink-not-writing event (needs the two-sided condition first)
+  - metric: debezium_jdbc_connector_metrics_totalnumberofwrites
+    labels: [server]
+    why: end-to-end proof - rows actually applied to sinkdb (zv-debezium
+      JdbcSinkConnectorMetrics; deletes/truncates siblings exist)
+  - metric: kafka_connect_worker_connector_count
+  - metric: kafka_connect_worker_task_count
+    why: worker population changes (expected to be 2 connectors / 2 tasks)
+
+# zv-monitor's OWN output (job zv-monitor, :5558) - do NOT subscribe, that is
+# this app's output side (feedback loop): connector_health_healthy,
+# connector_health_failedtaskcount, connector_health_consecutivefailures,
+# zv_event_counter_count{source,pattern}. Grafana already charts them.
+
+# -------------------------------------------------------------------- later --
+# Sensible but not minimum; add on demand (1-broker dev stack makes most
+# broker metrics near-constant; names are default-format derived - grep
+# :5559 before relying on them):
+#   kafka_server_replicamanager_underreplicatedpartitions > 0    (prod CRITICAL)
+#   kafka_controller_kafkacontroller_activecontrollercount != 1
+#   kafka_controller_kafkacontroller_offlinepartitionscount > 0
+#   debezium_postgres_connector_metrics_snapshotrunning{context="snapshot"} (INFO)
+#   debezium_postgres_connector_metrics_totaltablecount / remainingtablecount
+# Explicit exporter rules for the debezium.postgres domain would give stable
+# snake_case names (e.g. one rule per attr -> debezium_postgres_lag_ms) instead
+# of the brittle catch-all camel-mash; sketch only, do it when a rebase hurts:
+#   - pattern: 'debezium.postgres<type=connector-metrics, context=streaming, server=(.+)><>MilliSecondsBehindSource:'
+#     name: debezium_postgres_lag_ms
+#     labels: {server: "$1"}
+#     type: GAUGE

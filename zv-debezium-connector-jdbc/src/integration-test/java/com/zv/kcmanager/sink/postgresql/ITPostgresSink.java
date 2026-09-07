@@ -23,7 +23,7 @@ import com.zv.kcmanager.common.util.TestUtils;
  * Kafka via the shared stack and asserts the rows replicated into the sink
  * Postgres.
  */
-public class PostgresSinkIT extends ZvDebeziumITBase {
+public class ITPostgresSink extends ZvDebeziumITBase {
 
     private static final String CONNECTOR_CLASS = "io.debezium.connector.jdbc.JdbcSinkConnector";
     private static final ObjectMapper JSON = new ObjectMapper();

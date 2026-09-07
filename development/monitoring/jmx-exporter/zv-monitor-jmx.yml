@@ -16,5 +16,18 @@ rules:
       connector: "$1"
     type: GAUGE
 
+  # Event counters (com.zv.event.EventCounter) - one per (source, patternId)
+  # pair, registered lazily on first hit. Numeric attributes (Count,
+  # LastEpochMillis) become gauges; string attributes (PatternId, Source,
+  # LastContainer, LastMessage) are silently skipped by the exporter.
+  # `zv_event_counter_count{source="log",pattern="npe"}` is the one to alert
+  # or chart a rate() on.
+  - pattern: "com.zv<type=EventCounter, source=(.+), pattern=(.+)><>(\\w+)"
+    name: "zv_event_counter_$3"
+    labels:
+      source: "$1"
+      pattern: "$2"
+    type: GAUGE
+
   # Catch-all for standard JVM metrics (heap, gc, threads, etc.)
   - pattern: ".*"

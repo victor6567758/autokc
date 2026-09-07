@@ -13,7 +13,7 @@ PostgreSQL connector, modeled on streamkap's `streamkap-tests` /
   `wal_level=logical` (the stack's single database — the CDC origin for
   these source ITs) and a Kafka Connect worker whose image is built from
   **this module's own plugin tarball** (hence the `-Passembly` build).
-- The tests (`PostgresSourceIT`) deploy the fork's `PostgresConnector` through
+- The tests (`ITPostgresSource`) deploy the fork's `PostgresConnector` through
   the Connect REST API, mutate the Postgres with plain SQL and assert the
   emitted change events on real Kafka topics — exactly the path the
   development docker-compose pipeline takes.
@@ -31,14 +31,16 @@ PostgreSQL connector, modeled on streamkap's `streamkap-tests` /
 From the repo root (the Connect worker image is built from the module's
 plugin tarball, hence `-Passembly`):
 
-    mvn verify -Passembly -pl zv-debezium-connector-postgres
+    mvn verify -Passembly,run-its -pl zv-debezium-connector-postgres
 
 or standalone (after the install above):
 
-    cd zv-debezium-connector-postgres && mvn verify -Passembly
+    cd zv-debezium-connector-postgres && mvn verify -Passembly,run-its
 
-Failsafe picks up `**/*IT.java`; use `-Dit.test=PostgresSourceIT` to run a
-single class.
+Failsafe picks up the `IT*`-prefixed classes in `src/integration-test/java`;
+they run only when the `run-its` profile is active (defined in the root pom,
+inherited by this module). Use `-Dit.test=ITPostgresSource` to run a single
+class.
 
 ## zv wrapper connector
 
@@ -72,9 +74,10 @@ next stage. `ZvSqlConfig` holds the parsing so the task will reuse it verbatim.
         ZvPostgresSourceConnector.java   zv wrapper connector (validate-time SQL checks)
         ZvSqlConfig.java                 zv.sql.* parsing, JDBC derivation, statement splitter
     src/main/resources/zv-sql/health.sql example SQL resource (shipped + parse-checked)
-    src/test/java/com.zv.kcmanager/
-        source/postgresql/PostgresSourceIT.java    source-side ITs (stock connector + zv wrapper)
-        source/postgresql/ZvSqlConfigTest.java     unit tests (no database)
+    src/test/java/com.zv.kcmanager/source/postgresql/
+        ZvSqlConfigTest.java                       unit tests (no database, run automatically)
+    src/integration-test/java/com.zv.kcmanager/source/postgresql/
+        ITPostgresSource.java                      source-side ITs (stock connector + zv wrapper)
 
     shared test plumbing ships in zv-debezium-common's test-jar:
     com.zv.kcmanager.common.test.ZvDebeziumITBase   full docker stack (Kafka + Postgres + Connect worker) + REST/Kafka/SQL helpers
@@ -102,6 +105,6 @@ repository root after the assembly step:
 
 - Each test uses its own replication slot + publication (`zvit_slot_*`) and
   connector name, so tests never collide on slots or connectors.
-- The sink-side counterpart (`PostgresSinkIT`) lives in
+- The sink-side counterpart (`ITPostgresSink`) lives in
   `zv-debezium-connector-jdbc` and extends the same shared `ZvDebeziumITBase`
   (its Postgres plays the CDC-target role instead).
