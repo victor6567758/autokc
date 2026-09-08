@@ -2,9 +2,12 @@
   "title": "Pipeline Health",
   "uid": "zv-monitor-health",
   "schemaVersion": 39,
-  "version": 4,
+  "version": 5,
   "refresh": "10s",
   "time": { "from": "now-30m", "to": "now" },
+  "links": [
+    { "title": "Pipeline Logs", "type": "link", "url": "/d/zv-monitor-logs/pipeline-logs?from=${__from}&to=${__to}", "targetBlank": false, "tooltip": "Open the Pipeline Logs dashboard (keeps the time range)" }
+  ],
   "panels": [
     {
       "id": 100,
@@ -39,7 +42,7 @@
       "type": "timeseries",
       "gridPos": { "h": 6, "w": 12, "x": 12, "y": 7 },
       "targets": [
-        { "expr": "rate(kafka_connect_worker_rebalance_rebalance_total[5m])", "legendFormat": "rebalances/s" },
+        { "expr": "rate(kafka_connect_worker_rebalance_completed_rebalances_total[5m])", "legendFormat": "rebalances/s" },
         { "expr": "kafka_connect_worker_rebalance_rebalance_avg_time_ms", "legendFormat": "avg time (ms)" }
       ]
     },
@@ -210,5 +213,6 @@
         { "expr": "zv_sql_statement_duration_ms_mean", "legendFormat": "{{connector}} / {{statement}}" }
       ]
     }
-  ]
+  ],
+  "templating": { "list": [] }
 }

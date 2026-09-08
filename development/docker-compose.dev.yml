@@ -7,6 +7,67 @@
 # Start via `make up-dev`, or manually:
 #   docker compose -f docker-compose.dev.yml up -d
 
+# Presentation metadata for utils/compose_urls.py (via scripts/print-urls.sh):
+# how each service's published ports render in the URL table. Keys are service
+# names; per-port entries are keyed on the CONTAINER port, written as a QUOTED
+# string because docker compose rejects non-string keys (the script accepts
+# both). kind: http (default) | metrics | tcp; path: URL path appended for
+# http/metrics (default "/"). label/note: display name and table hint.
+# docker compose ignores this block - it is documentation consumed by tooling.
+x-url-info:
+  kafka:
+    label: Kafka broker
+    note: bootstrap server (PLAINTEXT_HOST listener)
+    ports:
+      "9092": {kind: tcp}
+      "5559": {kind: metrics, path: /metrics}
+  schema-registry:
+    label: Schema Registry
+    note: Apicurio (Confluent-compat REST, try /subjects)
+    ports:
+      "8080": {kind: http, path: /apis/ccompat/v7}
+  kafka-connect:
+    label: Kafka Connect
+    note: "REST API: /connectors, /connectors?expand=status"
+    ports:
+      "8083": {kind: http, path: /connectors}
+      "5557": {kind: metrics, path: /metrics}
+  postgres-source:
+    label: PostgreSQL src
+    note: sourcedb, postgres/postgres
+    ports:
+      "5432": {kind: tcp}
+  postgres-sink:
+    label: PostgreSQL sink
+    note: sinkdb, postgres/postgres
+    ports:
+      "5432": {kind: tcp}
+  loki:
+    label: Loki
+    note: log store - query via Grafana (Explore / Pipeline Health)
+    ports:
+      "3100": {kind: http, path: /ready}
+  kafka-ui:
+    label: Kafka UI
+    note: 'no login, cluster "zv-monitor"'
+    ports:
+      "8080": {kind: http}
+  pgweb:
+    label: pgweb (Postgres)
+    note: pick the sourcedb/sinkdb bookmark
+    ports:
+      "8081": {kind: http}
+  prometheus:
+    label: Prometheus
+    note: no login, targets at /targets
+    ports:
+      "9090": {kind: http}
+  grafana:
+    label: Grafana
+    note: "admin/admin (anonymous viewer ok); dashboards: /d/zv-monitor-health, /d/zv-monitor-logs"
+    ports:
+      "3000": {kind: http}
+
 services:
 
   # ---------------------------------------------------------------- Kafka --
@@ -38,6 +99,33 @@ services:
     volumes:
       - ./monitoring/jmx-exporter/kafka-broker-jmx.yml:/opt/kafka-broker-jmx.yml:ro
 
+  # ----------------------------------------------------- Schema Registry --
+  # Apicurio Registry 3.x (Apache-2.0, CNCF sandbox): central
+  # Avro/JSON-Schema/Protobuf schema storage for the topics, in kafkasql
+  # mode (the broker above is its backing store - no extra database). The
+  # Confluent-compatible REST API lives under /apis/ccompat/v7. The worker
+  # keeps JsonConverter as its default but pre-binds
+  # key/value.converter.schema.registry.url to this address
+  # (http://schema-registry:8080/apis/ccompat/v7), so a connector-level
+  # converter override talks to the registry out of the box.
+  # When running zv-monitor on the host, the registry is at
+  # localhost:8084/apis/ccompat/v7.
+  schema-registry:
+    image: apicurio/apicurio-registry:3.3.1
+    depends_on:
+      kafka:
+        condition: service_started
+    ports:
+      - "8084:8080"   # REST API - host 8081 is taken by pgweb
+    environment:
+      APICURIO_STORAGE_KIND: kafkasql
+      APICURIO_KAFKASQL_BOOTSTRAP_SERVERS: kafka:29092
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/apis/ccompat/v7/subjects || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   # ------------------------------------- Kafka Connect plugin packagers ----
   # Build-only images (never started), COPY'd into the worker image by Dockerfile.kc.
   zv-debezium-connector-postgres:
@@ -68,6 +156,8 @@ services:
     depends_on:
       kafka:
         condition: service_started
+      schema-registry:
+        condition: service_healthy
       postgres-source:
         condition: service_healthy
       postgres-sink:
@@ -78,10 +168,20 @@ services:
     environment:
       # connect-distributed.sh derives the worker JVM options from these
       KAFKA_HEAP_OPTS: "-Xms256m -Xmx1g"
-      # rule config bind-mounted - tweaks don't need a rebuild
-      KAFKA_OPTS: "-javaagent:/opt/jmx_prometheus_javaagent.jar=5557:/opt/kafka-connect-jmx.yml"
+      # rule config + log4j config are bind-mounted - tweaks don't need a rebuild.
+      # The three -D log levels feed the ${...} placeholders of the mounted
+      # connect-log4j.properties (worker restart picks changes up; the Connect
+      # Admin API can switch loggers at runtime without a restart - see that
+      # file's header). Override per bring-up, e.g.:
+      #   ZV_LOG_LEVEL=DEBUG DEBEZIUM_LOG_LEVEL=DEBUG make up-dev
+      KAFKA_OPTS: >-
+        -javaagent:/opt/jmx_prometheus_javaagent.jar=5557:/opt/kafka-connect-jmx.yml
+        -Dzv.log.level=${ZV_LOG_LEVEL:-INFO}
+        -Ddebezium.log.level=${DEBEZIUM_LOG_LEVEL:-INFO}
+        -Dkafka.connect.log.level=${KAFKA_CONNECT_LOG_LEVEL:-INFO}
     volumes:
       - ./kafka-connect/connect-distributed.properties:/opt/kafka/config/connect-distributed.properties:ro
+      - ./kafka-connect/connect-log4j.properties:/opt/kafka/config/connect-log4j.properties:ro
       - ./monitoring/jmx-exporter/kafka-connect-jmx.yml:/opt/kafka-connect-jmx.yml:ro
 
   # ------------------------------------------------------------- Postgres --
@@ -131,6 +231,9 @@ services:
       - "3100:3100"
     volumes:
       - ./monitoring/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      # named volume (shared with docker-compose.yml via the same compose
+      # project name): ingested logs survive container recreation
+      - loki-data:/loki
     command: ["-config.file=/etc/loki/local-config.yaml"]
 
   promtail:
@@ -140,6 +243,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./monitoring/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      # named volume (shared with docker-compose.yml): read positions survive
+      # promtail restarts, so already-shipped lines are not re-sent
+      - promtail-data:/positions
     command: ["-config.file=/etc/promtail/config.yml"]
 
   # ------------------------------------------------------------- Kafka UI --
@@ -147,11 +253,13 @@ services:
     image: provectuslabs/kafka-ui:v0.7.2
     depends_on:
       - kafka
+      - schema-registry
     ports:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: zv-monitor
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8080/apis/ccompat/v7
       DYNAMIC_CONFIG_ENABLED: "true"
 
   # ---------------------------------------------------------- Postgres UI --
@@ -199,3 +307,9 @@ services:
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+# shared with docker-compose.yml (same compose project name), so logs and
+# promtail positions survive switching between `make up` and `make up-dev`
+volumes:
+  loki-data:
+  promtail-data:

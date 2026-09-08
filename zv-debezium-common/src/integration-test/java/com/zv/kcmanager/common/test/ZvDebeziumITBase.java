@@ -81,6 +81,9 @@ public abstract class ZvDebeziumITBase {
     public static final int KAFKA_INTERNAL_PORT = 29092;   // PLAINTEXT, in-network
     public static final int KAFKA_HOST_PORT = 9092;        // PLAINTEXT_HOST, bound to a free host port
     public static final int KAFKA_CONNECT_PORT = 8083;     // Connect REST API
+    public static final String SCHEMA_REGISTRY_ALIAS = "schema-registry";   // mirrors the compose service name
+    public static final int SCHEMA_REGISTRY_PORT = 8080;   // Apicurio Registry REST API
+    public static final String SCHEMA_REGISTRY_CCOMPAT = "/apis/ccompat/v7";   // Confluent-compatible REST base path
     public static final int KAFKA_CONNECT_DEBUG_PORT = 5005;
 
     // The single Postgres shared by all tests of a class.
@@ -90,6 +93,7 @@ public abstract class ZvDebeziumITBase {
 
     protected final Network network = Network.newNetwork();
     protected GenericContainer<?> kafka;
+    protected GenericContainer<?> schemaRegistry;
     protected PostgreSQLContainer<?> postgres;
     protected GenericContainer<?> kafkaConnect;
 
@@ -144,6 +148,28 @@ public abstract class ZvDebeziumITBase {
                 .withLogConsumer(logConsumer(KAFKA_ALIAS))
                 .waitingFor(Wait.forListeningPort().withStartupTimeout(STARTUP_TIMEOUT));
 
+        // Apicurio Registry 3.x (Apache-2.0, CNCF sandbox) in kafkasql mode -
+        // backed by the stack's Kafka broker, no extra database. Mirrors the
+        // compose stack's schema-registry service. The Confluent-compatible
+        // REST API lives under SCHEMA_REGISTRY_CCOMPAT. The worker keeps
+        // JsonConverter as its default but pre-binds
+        // key/value.converter.schema.registry.url to schemaRegistryNetworkUrl(),
+        // so a connector-level converter override (Avro/Protobuf/JSON-Schema)
+        // talks to the registry out of the box; test-side consumers use
+        // schemaRegistryUrl() (host-mapped).
+        schemaRegistry = new GenericContainer<>(DockerImageName.parse("apicurio/apicurio-registry:3.3.1"))
+                .withNetwork(network)
+                .withNetworkAliases(SCHEMA_REGISTRY_ALIAS)
+                .withEnv("APICURIO_STORAGE_KIND", "kafkasql")
+                .withEnv("APICURIO_KAFKASQL_BOOTSTRAP_SERVERS", KAFKA_ALIAS + ":" + KAFKA_INTERNAL_PORT)
+                .withExposedPorts(SCHEMA_REGISTRY_PORT)
+                .dependsOn(kafka)
+                .withLogConsumer(logConsumer(SCHEMA_REGISTRY_ALIAS))
+                .waitingFor(Wait.forHttp(SCHEMA_REGISTRY_CCOMPAT + "/subjects")
+                        .forPort(SCHEMA_REGISTRY_PORT)
+                        .forStatusCode(200)
+                        .withStartupTimeout(STARTUP_TIMEOUT));
+
         // Postgres - the stack's single database (CDC origin or sink target).
         postgres = new FixedPortPostgresContainer(DockerImageName.parse("postgres:16"), postgresHostPort)
                 .withNetwork(network)
@@ -154,7 +180,7 @@ public abstract class ZvDebeziumITBase {
                 .withCommand("postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10")
                 .withLogConsumer(logConsumer(POSTGRES_ALIAS));
 
-        List<GenericContainer<?>> containers = new ArrayList<>(List.of(kafka, postgres));
+        List<GenericContainer<?>> containers = new ArrayList<>(List.of(kafka, schemaRegistry, postgres));
 
         // Kafka Connect worker
         Path pluginTarball = findPluginTarball().orElseThrow(() -> new IllegalStateException("No plugin tarball (target/zv-debezium-connector-*.tar.gz) found "));
@@ -164,7 +190,7 @@ public abstract class ZvDebeziumITBase {
 
         Startables.deepStart(containers).join();
         waitForKafkaReady();
-        LOGGER.info("Stack ready; Kafka Connect REST at {}", connectRestUrl());
+        LOGGER.info("Stack ready; Kafka Connect REST at {}, Schema Registry at {}", connectRestUrl(), schemaRegistryUrl());
     }
 
     @AfterAll
@@ -172,7 +198,7 @@ public abstract class ZvDebeziumITBase {
         if (producer != null) {
             producer.close();
         }
-        Stream.of(kafkaConnect, postgres, kafka)
+        Stream.of(kafkaConnect, schemaRegistry, postgres, kafka)
                 .filter(Objects::nonNull)
                 .forEach(GenericContainer::stop);
         network.close();
@@ -207,7 +233,7 @@ public abstract class ZvDebeziumITBase {
                 .withCreateContainerCmdModifier(cmd -> cmd
                         .withEntrypoint("/opt/kafka/bin/connect-distributed.sh")
                         .withCmd("/opt/kafka/config/connect-distributed.properties"))
-                .dependsOn(kafka, postgres)
+                .dependsOn(kafka, schemaRegistry, postgres)
                 .withLogConsumer(logConsumer(KAFKA_CONNECT_ALIAS))
                 .waitingFor(Wait.forHttp("/connectors")
                         .forPort(KAFKA_CONNECT_PORT)
@@ -279,6 +305,13 @@ public abstract class ZvDebeziumITBase {
                 "value.converter=org.apache.kafka.connect.json.JsonConverter",
                 "key.converter.schemas.enable=true",
                 "value.converter.schemas.enable=true",
+                // Registry binding for schema-managed converters: the worker points
+                // key/value.converter.schema.registry.url at the stack's registry
+                // (in-network ccompat URL), so a connector-level converter override
+                // (Avro/Protobuf/JSON-Schema) talks to it out of the box. The default
+                // JSON converters ignore these keys - the wire format stays JSON.
+                "key.converter.schema.registry.url=" + schemaRegistryNetworkUrl(),
+                "value.converter.schema.registry.url=" + schemaRegistryNetworkUrl(),
                 "internal.key.converter=org.apache.kafka.connect.json.JsonConverter",
                 "internal.value.converter=org.apache.kafka.connect.json.JsonConverter",
                 "internal.key.converter.schemas.enable=false",
@@ -491,6 +524,16 @@ public abstract class ZvDebeziumITBase {
     /** Base URL of the Connect REST API, reachable from the test JVM. */
     public String connectRestUrl() {
         return "http://" + kafkaConnect.getHost() + ":" + kafkaConnect.getMappedPort(KAFKA_CONNECT_PORT);
+    }
+
+    /** Base URL of the registry's Confluent-compatible REST API, reachable from the test JVM. */
+    public String schemaRegistryUrl() {
+        return "http://" + schemaRegistry.getHost() + ":" + schemaRegistry.getMappedPort(SCHEMA_REGISTRY_PORT) + SCHEMA_REGISTRY_CCOMPAT;
+    }
+
+    /** In-network Confluent-compatible registry URL for connector configs ({@code schema.registry.url}). */
+    public String schemaRegistryNetworkUrl() {
+        return "http://" + SCHEMA_REGISTRY_ALIAS + ":" + SCHEMA_REGISTRY_PORT + SCHEMA_REGISTRY_CCOMPAT;
     }
 
     /** Creates (or idempotently updates) a connector via {@code PUT /connectors/{name}/config}. */

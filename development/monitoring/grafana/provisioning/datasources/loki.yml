@@ -3,7 +3,14 @@ apiVersion: 1
 datasources:
   - name: Loki
     type: loki
+    uid: loki
     access: proxy
     url: http://loki:3100
     isDefault: false
     editable: true
+    # Upper bound for log lines returned per logs query (default 1000). The
+    # Pipeline Logs dashboard reads oldest->newest, so with direction=forward
+    # the limit is taken from the START of the window - 5000 covers a full
+    # default 1h window of the chattiest service (kafka-connect, ~2.2k/h).
+    jsonData:
+      maxLines: 5000

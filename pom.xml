@@ -38,6 +38,7 @@
     <version.jackson>2.17.1</version.jackson>
     <version.guava>33.3.1-jre</version.guava>
     <version.slf4j>2.0.13</version.slf4j>
+    <version.logback>1.5.8</version.logback>
     <version.assertj>3.26.3</version.assertj>
     <version.mockito>5.12.0</version.mockito>
     <version.awaitility>4.2.1</version.awaitility>
@@ -90,7 +91,9 @@
         <version>${version.guava}</version>
       </dependency>
 
-      <!-- Logging API + lightweight binding -->
+      <!-- Logging API + bindings: slf4j-simple for tests/quick runs, Logback
+           for standalone apps (zv-monitor binds it in its own pom; version
+           matches the slf4j 2.x line). -->
       <dependency>
         <groupId>org.slf4j</groupId>
         <artifactId>slf4j-api</artifactId>
@@ -100,6 +103,11 @@
         <groupId>org.slf4j</groupId>
         <artifactId>slf4j-simple</artifactId>
         <version>${version.slf4j}</version>
+      </dependency>
+      <dependency>
+        <groupId>ch.qos.logback</groupId>
+        <artifactId>logback-classic</artifactId>
+        <version>${version.logback}</version>
       </dependency>
 
       <!-- Common test helpers -->

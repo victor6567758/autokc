@@ -1,0 +1,93 @@
+{
+  "title": "Pipeline Logs",
+  "uid": "zv-monitor-logs",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {
+    "hidden": false,
+    "refresh_intervals": ["10s", "30s", "1m", "5m", "15m", "1h"],
+    "time_options": ["1h", "3h", "6h", "12h", "24h"]
+  },
+  "links": [
+    { "title": "Pipeline Health", "type": "link", "url": "/d/zv-monitor-health/pipeline-health?from=${__from}&to=${__to}", "targetBlank": false, "tooltip": "Open the Pipeline Health dashboard (keeps the time range)" }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Log volume per service",
+      "description": "Log lines of the service picked in the top bar (single select), optionally narrowed by the 'Line contains' textbox.",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        { "expr": "sum by (service) (count_over_time({service=\"$service\"} |= \"$filter\" [$__auto]))", "legendFormat": "{{service}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Errors & warnings per service",
+      "description": "Lines with the words error/warn (word-boundary match, so words like 'OutOfMemoryError' inside echoed queries don't count) - independent of the 'Line contains' textbox, so accidental text there can't hide problems.",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        { "expr": "sum by (service) (count_over_time({service=\"$service\"} |~ `(?i)\\berror\\b` [$__auto]))", "legendFormat": "{{service}} / error", "refId": "A" },
+        { "expr": "sum by (service) (count_over_time({service=\"$service\"} |~ `(?i)\\bwarn\\b` [$__auto]))", "legendFormat": "{{service}} / warn", "refId": "B" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Container logs",
+      "description": "Raw log lines of the ONE service picked in the top bar (single select, default kafka-connect) - services are never combined. 'Line contains' is a substring filter (e.g. ERROR). The time window comes from the top-right picker: it defaults to the last hour, and From/To accept absolute timestamps (e.g. 2026-09-08 09:00:00) to jump to an exact incident window. Natural reading order: oldest at the top, newest at the bottom. If the window holds more lines than the limit (5000), the newest ones are cut off - narrow the range or filter to pull them in; Loki keeps everything.",
+      "type": "logs",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 13 },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Ascending",
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        { "expr": "{service=\"$service\"} |= \"$filter\"", "refId": "A" }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "loki" },
+        "query": "label_values(service)",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false,
+        "hide": 0,
+        "sort": 1,
+        "description": "One service at a time (drop-down, default kafka-connect) - log streams of different services are never combined.",
+        "current": { "selected": true, "text": "kafka-connect", "value": "kafka-connect" },
+        "options": []
+      },
+      {
+        "name": "filter",
+        "label": "Line contains",
+        "type": "textbox",
+        "hide": 0,
+        "description": "Optional substring filter applied to the log lines, e.g. ERROR",
+        "current": { "selected": true, "text": "", "value": "" }
+      }
+    ]
+  }
+}

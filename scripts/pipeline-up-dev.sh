@@ -14,9 +14,11 @@ for tool in docker jq; do
   command -v "$tool" >/dev/null || { echo "ERROR: '$tool' is required" >&2; exit 1; }
 done
 
+# NB: compgen -G (not `ls "glob"`) - this box's ls is uutils coreutils, which
+# (unlike GNU ls) does not expand glob characters in quoted arguments.
 missing=0
 for module in zv-debezium-connector-postgres zv-debezium-connector-jdbc; do
-  ls "${module}/target/${module}-[0-9]*.tar.gz" >/dev/null 2>&1 || missing=1
+  compgen -G "${module}/target/${module}-[0-9]*.tar.gz" >/dev/null || missing=1
 done
 if [ "$missing" -ne 0 ]; then
   echo '== Connector plugin distributions missing - building everything =='
@@ -46,8 +48,10 @@ echo '       -jar zv-monitor/target/zv-monitor.jar'
 echo
 echo '(jar version matches version.jmx-prometheus-javaagent in the parent pom;'
 echo ' build it with: mvn -q clean package -pl zv-monitor -am)'
+echo '(log level: ZV_MONITOR_LOG_LEVEL=debug - Logback reads the env var natively;'
+echo ' see zv-monitor/src/main/resources/logback.xml)'
 echo
 echo 'Metrics:  http://localhost:5558/metrics'
 echo 'Grafana:  http://localhost:3000 - picks the local instance up via'
 echo '          Prometheus (host.docker.internal:5558) within one scrape.'
-"$SCRIPT_DIR/print-urls.sh"
+"$SCRIPT_DIR/print-urls.sh" development/docker-compose.dev.yml

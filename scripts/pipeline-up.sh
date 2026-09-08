@@ -13,9 +13,11 @@ for tool in docker jq; do
   command -v "$tool" >/dev/null || { echo "ERROR: '$tool' is required" >&2; exit 1; }
 done
 
+# NB: compgen -G (not `ls "glob"`) - this box's ls is uutils coreutils, which
+# (unlike GNU ls) does not expand glob characters in quoted arguments.
 missing=0
 for module in zv-debezium-connector-postgres zv-debezium-connector-jdbc; do
-  ls "${module}/target/${module}-[0-9]*.tar.gz" >/dev/null 2>&1 || missing=1
+  compgen -G "${module}/target/${module}-[0-9]*.tar.gz" >/dev/null || missing=1
 done
 if [ "$missing" -ne 0 ]; then
   echo '== Connector plugin distributions missing - building everything =='

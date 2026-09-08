@@ -48,20 +48,29 @@
       <artifactId>jackson-dataformat-yaml</artifactId>
     </dependency>
 
-    <!-- Lightweight logging -->
+    <!-- Logging: slf4j API + Logback backend (the only slf4j provider on the
+         classpath - the fat jar stays provider-clean). Level switching is a
+         plain env var: ZV_MONITOR_LOG_LEVEL=debug, read natively by
+         src/main/resources/logback.xml - works for the container, `java -jar`
+         and IDEA run configurations alike. -->
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
     </dependency>
     <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-simple</artifactId>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
     </dependency>
 
     <!-- Testing -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

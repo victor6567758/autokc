@@ -61,7 +61,7 @@ purpose-built for it.
 
 - `com.zv.event` - `Event`, `EventBus`, `EventHandler`, `LoggingEventHandler`,
   `EventCounterRegistry` (+ MBean). Source-agnostic; the metrics path
-  (`ZvMonitorApp.pollOnce`) and the log path (`LogEventPoller`) both just call
+  (`ConnectorStatusPoller`) and the log path (`LogEventPoller`) both just call
   `eventBus.publish(...)`.
 - `com.zv.logs` - `LogPattern` (id, severity, container selector, regex),
   `LogPatternCatalog` (loads the filtered set at startup from

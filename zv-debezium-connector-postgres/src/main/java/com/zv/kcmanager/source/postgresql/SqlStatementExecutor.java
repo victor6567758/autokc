@@ -83,12 +83,17 @@ final class SqlStatementExecutor implements AutoCloseable {
             for (Map.Entry<String, List<String>> resource : statements.entrySet()) {
                 List<String> resourceStatements = resource.getValue();
                 for (int i = 0; i < resourceStatements.size(); i++) {
+                    String sql = resourceStatements.get(i);
                     String statementId = statementId(resource.getKey(), i + 1);
+                    // logged before executing so a failing statement still shows its SQL
+                    LOGGER.debug("Executing zv SQL statement {} of connector {}: {}", statementId, connectorName, sql);
                     long startedAt = System.nanoTime();
-                    try (PreparedStatement statement = connection.prepareStatement(resourceStatements.get(i))) {
+                    try (PreparedStatement statement = connection.prepareStatement(sql)) {
                         statement.setQueryTimeout(config.queryTimeoutSeconds());
                         try (ResultSet resultSet = statement.executeQuery()) {
-                            report(statementId, (System.nanoTime() - startedAt) / 1_000_000L, resultSet);
+                            long durationMs = (System.nanoTime() - startedAt) / 1_000_000L;
+                            LOGGER.debug("zv SQL statement {} of connector {} executed in {} ms", statementId, connectorName, durationMs);
+                            report(statementId, durationMs, resultSet);
                         }
                     } catch (SQLException e) {
                         LOGGER.warn("zv SQL statement {} of connector {} failed: {}", statementId,

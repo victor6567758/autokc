@@ -7,8 +7,9 @@ Code shared by the two connector modules (`zv-debezium-connector-postgres`,
   message transforms)
 - `com.zv.kcmanager.common.test` - `ZvDebeziumITBase`, the single
   shared IT base both connector modules extend: it spins the full development
-  stack (Kafka broker, one Postgres and a Kafka Connect worker built from the
-  module's plugin tarball) on a private Docker network; that single Postgres
+  stack (Kafka broker, Apicurio Registry, one Postgres and a Kafka
+  Connect worker built from the module's plugin tarball) on a private Docker
+  network; that single Postgres
   plays whichever role the module tests (CDC origin for source ITs, CDC
   target for sink ITs)
 - `com.zv.kcmanager.common.util` - IT helpers

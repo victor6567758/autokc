@@ -1,15 +1,31 @@
 #!/usr/bin/env bash
-# Print the exposed service URLs (plain URLs - Ctrl+Click in GNOME Terminal).
+# Print the exposed service URLs - parsed live from the docker-compose
+# file(s) by utils/compose_urls.py, so the list stays in sync with the
+# compose files instead of a hardcoded table (plain URLs - Ctrl+Click in
+# GNOME Terminal).
+#
+# Usage:
+#   print-urls.sh                                      # full stack (default)
+#   print-urls.sh development/docker-compose.dev.yml   # dev stack (no zv-monitor)
+#   print-urls.sh a.yml b.yml                          # several files, later win
+#   print-urls.sh --json ...                           # machine-readable output
+# With no args, $COMPOSE_FILE (docker's colon-separated form) is honoured
+# when set.
 set -euo pipefail
 
-printf '\n== Services (Ctrl+Click the URLs in GNOME Terminal) ==\n\n'
-printf '  %-18s %-30s %s\n' 'Kafka UI'        'http://localhost:8080'         'no login, cluster "zv-monitor"'
-printf '  %-18s %-30s %s\n' 'pgweb (Postgres)' 'http://localhost:8081'         'pick the sourcedb/sinkdb bookmark'
-printf '  %-18s %-30s %s\n' 'Grafana'          'http://localhost:3000'         'admin/admin (anonymous viewer ok)'
-printf '  %-18s %-30s %s\n' 'Prometheus'       'http://localhost:9090'         'no login, targets at /targets'
-printf '  %-18s %-30s %s\n' 'Kafka Connect'    'http://localhost:8083'         'REST /connectors, metrics localhost:5557'
-printf '  %-18s %-30s %s\n' 'zv-monitor'       'http://localhost:5558/metrics' 'container (make up) / local run (make up-dev)'
-printf '  %-18s %-30s %s\n' 'Kafka broker'     'localhost:9092'                'metrics localhost:5559/metrics'
-printf '  %-18s %-30s %s\n' 'PostgreSQL src'   'localhost:5432'                'sourcedb, postgres/postgres'
-printf '  %-18s %-30s %s\n' 'PostgreSQL sink'  'localhost:5433'                'sinkdb, postgres/postgres'
-printf '\n'
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [ "$#" -gt 0 ]; then
+  exec python3 "$ROOT/utils/compose_urls.py" "$@"
+elif [ -n "${COMPOSE_FILE:-}" ]; then
+  files=()
+  IFS=: read -ra _cf <<< "$COMPOSE_FILE"
+  for f in "${_cf[@]}"; do
+    if [ -n "$f" ]; then files+=("$f"); fi
+  done
+  exec python3 "$ROOT/utils/compose_urls.py" "${files[@]}"
+else
+  exec python3 "$ROOT/utils/compose_urls.py" "$ROOT/development/docker-compose.yml"
+fi
+

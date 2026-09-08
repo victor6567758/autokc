@@ -33,7 +33,7 @@ zv-monitor/
 │   ├── pipeline-up-dev.sh          dev stack: no zv-monitor container
 │   ├── pipeline-down.sh            stop (pass -v to also wipe the volumes)
 │   ├── register-connectors.sh      (re-)register connectors, wait for RUNNING
-│   ├── print-urls.sh               exposed service URLs table
+│   ├── print-urls.sh               exposed service URLs (utils/compose_urls.py reads compose ports + x-url-info)
 │   ├── simulate-changes.sh         continuous CDC traffic generator (Ctrl+C)
 │   └── zv-debezium-track.sh        zv-debezium feature-vs-release comparison
 └── .github/workflows/ci.yml        CI placeholder
@@ -108,8 +108,13 @@ connector (`postgres-source:sourcedb`, tables `customers` + `orders` -> topics
 `sourcedb.public.customers` / `sourcedb.public.orders`) and the zv-debezium
 JDBC sink connector (topics -> mirror tables in `sinkdb`, upsert mode +
 deletes), a source Postgres (logical replication enabled, seeded `customers`
-and `orders` tables), a sink Postgres, the zv-monitor app, Prometheus, Grafana
-and Kafka UI. The connectors (configs:
+and `orders` tables), a sink Postgres, Apicurio Registry (Apache-2.0, in
+kafkasql mode backed by the broker - schema storage for the topics,
+Confluent-compatible REST at `localhost:8084/apis/ccompat/v7`; the worker
+keeps JsonConverter as its default and pre-binds
+`key/value.converter.schema.registry.url` to the in-stack registry), the
+zv-monitor app, Prometheus,
+Grafana and Kafka UI. The connectors (configs:
 `development/kafka-connect/*.json`, one file per connector) are registered
 idempotently by `make connectors` (PUT), which waits
 for all of them to report RUNNING.
@@ -145,11 +150,62 @@ the host, and Prometheus scrapes your local instance through
 `host.docker.internal:5558`, so the Grafana dashboard works unchanged.
 `make up` brings the container variant back.
 
+### Log levels
+
+Every component's verbosity is a plain environment knob at bring-up time -
+no rebuild, no image edits (a worker restart applies them):
+
+```bash
+ZV_LOG_LEVEL=DEBUG DEBEZIUM_LOG_LEVEL=DEBUG make up   # or make up-dev
+```
+
+| variable (`make up` / `up-dev`) | logger | default | what DEBUG adds |
+|---|---|---|---|
+| `ZV_LOG_LEVEL` | `com.zv.kcmanager.*` | INFO | the zv SQL executor's per-statement lines: `Executing zv SQL statement health.1 of connector inventory-source: SELECT pg_wal_lsn_diff(...)` + `executed in N ms` (every poll interval) |
+| `DEBEZIUM_LOG_LEVEL` | `io.debezium.connector.postgresql` / `.jdbc` | INFO | Debezium snapshot/streaming internals, incl. the SQL Debezium itself runs |
+| `KAFKA_CONNECT_LOG_LEVEL` | `org.apache.kafka.connect.*` | INFO | worker internals (REST, converters, rebalances) |
+| `ZV_MONITOR_LOG_LEVEL` (zv-monitor, any run incl. IDEA) | zv-monitor (Logback) | info | per-poll connector state: `poll: connector '...' state=RUNNING tasks=1 failedTasks=0 healthy=1` (every poll interval); `warn`/`error` quiets the periodic INFO lines |
+
+The worker levels are `-D` system properties in `KAFKA_OPTS` that fill the
+`${...}` placeholders of `development/kafka-connect/connect-log4j.properties`
+(bind-mounted over the stock worker file - stock content plus the
+parameterized connector loggers at the bottom). Individual loggers can also
+be flipped at runtime without any restart through the Connect Admin API
+(changes survive until the worker restarts):
+
+```bash
+curl -X PUT localhost:8083/admin/v1/loggers/io.debezium.connector.postgresql \
+     -H 'Content-Type: application/json' -d '{"level":"DEBUG"}'
+#    ... same call with '{"level":null}' resets to the configured level
+```
+
+zv-monitor is the odd one out: it is a standalone app with its own logging
+backend (Logback, not the worker's log4j), and `ZV_MONITOR_LOG_LEVEL` is read
+natively from the environment by the `${...}` substitution in
+`zv-monitor/src/main/resources/logback.xml` - no flags needed. Same in IDEA:
+put `ZV_MONITOR_LOG_LEVEL=debug` into the run configuration's Environment
+Variables. A fully custom setup (per-logger levels, file/JSON appenders) goes
+in a separate file passed with `-Dlogback.configurationFile=/path/to/logback.xml`.
+
 ## 3. Look at the metrics
 
 - Grafana: http://localhost:3000 (anonymous viewer access enabled; admin/admin
-  if you need to edit) - the "zv Monitor - Connector Health" dashboard is
-  pre-provisioned.
+  if you need to edit) - two dashboards are pre-provisioned (provisioning in
+  `development/monitoring/grafana/provisioning/`: Prometheus datasource, Loki
+  datasource, dashboard provider): "Pipeline Health" (`/d/zv-monitor-health`)
+  for connector/task health, throughput and zv-monitor events, and "Pipeline
+  Logs" (`/d/zv-monitor-logs`) for container logs - volume, errors/warnings,
+  and the raw log browser. The Service drop-down is single-select (default
+  kafka-connect), so log streams of different services are never combined,
+  and 'Line contains' is a substring filter. The time picker defaults to the
+  last hour and accepts absolute From/To timestamps to jump to an exact
+  window. The two dashboards link to each other in the top bar.
+- Grafana -> Explore: pick the **Loki** datasource for container logs. Promtail
+  ships every docker container's stdout/stderr (docker_sd over the docker
+  socket, regardless of which compose project - or `docker run` - started it,
+  so a locally-run zv-monitor shows up too). Useful queries:
+  `{service="kafka-connect"}`, `{container=~".*zv-monitor.*"}`,
+  `{service="kafka-connect"} |= "zv SQL statement"` (the SQL debug lines).
 - Kafka UI: http://localhost:8080 - browse the `sourcedb.public.customers`
   and `sourcedb.public.orders` change-event topics.
 - Postgres UI (pgweb): http://localhost:8081 - quick SQL access to both

@@ -1,10 +1,14 @@
 # Minimal single-process Loki config for the prototype. Filesystem storage,
-# no auth, no retention tuning - logs live only as long as the container's
-# volume does. Good enough for local chaos experiments; not for prod.
+# no auth, no retention tuning - logs live in the loki-data named volume
+# (compose), so they survive stack restarts until `make down ARGS=-v`.
+# Good enough for local chaos experiments; not for prod.
 auth_enabled: false
 
 server:
   http_listen_port: 3100
+  # info level logs every executed query ("query echo" from caller=metrics.go),
+  # which lands in Loki itself and dominates the logs dashboard - warn is enough.
+  log_level: warn
 
 common:
   path_prefix: /loki

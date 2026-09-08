@@ -2,14 +2,10 @@ package com.zv;
 
 import com.zv.config.ZvMonitorConfig;
 import com.zv.connect.ConnectClient;
-import com.zv.connect.ConnectorStatus;
-import com.zv.connect.TaskStatus;
-import com.zv.event.Event;
+import com.zv.connect.ConnectorStatusPoller;
 import com.zv.event.EventBus;
 import com.zv.event.EventCounterRegistry;
-import com.zv.event.EventSeverity;
 import com.zv.event.LoggingEventHandler;
-import com.zv.jmx.ConnectorHealth;
 import com.zv.lifecycle.GracefulShutdown;
 import com.zv.logs.LogEventPoller;
 import com.zv.logs.LogPattern;
@@ -20,13 +16,10 @@ import com.zv.metrics.MetricPatternCatalog;
 import com.zv.metrics.MetricsEventPoller;
 import com.zv.metrics.PrometheusClient;
 import com.zv.remediation.LoggingRemediationHandler;
-import com.zv.remediation.RemediationHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -64,26 +57,21 @@ public class ZvMonitorApp {
         eventBus.register(counterRegistry);
 
         // ------------------------------------------------------- metrics path --
-        ConnectClient client = new ConnectClient(config.connectRestUrl());
-        RemediationHandler remediationHandler = new LoggingRemediationHandler();
+        // ConnectorStatusPoller (com.zv.connect) owns all Kafka Connect REST
+        // traffic: connector discovery, status polling, ConnectorHealth JMX
+        // MBeans, remediation hooks and connector-unhealthy/-recovered events.
+        ConnectorStatusPoller connectorStatusPoller = ConnectorStatusPoller.create(
+                new ConnectClient(config.connectRestUrl()), config.connectorNames(),
+                new LoggingRemediationHandler(), eventBus);
 
-        List<String> connectorNames = config.connectorNames().isEmpty()
-                ? client.listConnectors()
-                : config.connectorNames();
-        LOGGER.info("Monitoring connectors: {}", connectorNames);
-
-        Map<String, ConnectorHealth> healthByConnector = new HashMap<>();
-        for (String name : connectorNames) {
-            ConnectorHealth health = new ConnectorHealth(name.trim());
-            health.register();
-            healthByConnector.put(name.trim(), health);
-        }
-
+        // ---------------------------------------------------------- pollers --
+        // One shared scheduler for all pollers below; drained (grace, then
+        // interrupt) by the stop-pollers shutdown step before the MBeans the
+        // pollers feed are unregistered.
         ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(3);
         shutdown.addStep("stop-pollers",
                 () -> stopScheduler(scheduler, SHUTDOWN_GRACE_MS, SHUTDOWN_FORCE_GRACE_MS));
-        scheduler.scheduleAtFixedRate(() -> pollOnce(client, healthByConnector, remediationHandler, eventBus),
-                0, config.pollIntervalMs(), TimeUnit.MILLISECONDS);
+        connectorStatusPoller.start(scheduler, config.pollIntervalMs());
 
         // ---------------------------------------------------------- logs path --
         if (config.logEventsEnabled()) {
@@ -110,7 +98,7 @@ public class ZvMonitorApp {
         }
 
         shutdown.addStep("unregister-jmx-mbeans", () -> {
-            healthByConnector.values().forEach(ConnectorHealth::unregister);
+            connectorStatusPoller.unregisterMBeans();
             counterRegistry.unregisterAll();
         });
 
@@ -146,35 +134,4 @@ public class ZvMonitorApp {
         }
     }
 
-    private static void pollOnce(ConnectClient client, Map<String, ConnectorHealth> healthByConnector,
-                                  RemediationHandler remediationHandler, EventBus eventBus) {
-        for (Map.Entry<String, ConnectorHealth> entry : healthByConnector.entrySet()) {
-            String name = entry.getKey();
-            ConnectorHealth health = entry.getValue();
-            try {
-                ConnectorStatus status = client.getConnectorStatus(name);
-                boolean wasHealthy = health.getHealthy() == 1;
-                health.update(status);
-
-                if (status.isUnhealthy()) {
-                    remediationHandler.handleUnhealthy(status);
-                    eventBus.publish(Event.metric("connector-unhealthy", EventSeverity.CRITICAL, name,
-                            describeUnhealthy(status)));
-                } else if (!wasHealthy) {
-                    remediationHandler.handleRecovered(status);
-                    eventBus.publish(Event.metric("connector-recovered", EventSeverity.INFO, name,
-                            "connector and all tasks RUNNING"));
-                }
-            } catch (Exception e) {
-                LOGGER.error("Failed to poll status for connector '{}': {}", name, e.getMessage());
-            }
-        }
-    }
-
-    private static String describeUnhealthy(ConnectorStatus status) {
-        long failedTasks = status.tasks().stream().filter(TaskStatus::isFailed).count();
-        String errorMessage = status.errorMessage();
-        return "reachability=" + status.reachability() + " state=" + status.connectorState()
-                + " failedTasks=" + failedTasks + (errorMessage != null ? " error=" + errorMessage : "");
-    }
 }

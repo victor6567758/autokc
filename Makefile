@@ -8,7 +8,7 @@
 #   make up-dev        dev stack: no zv-monitor container, run it on your host
 #   make connectors    (re-)register the connectors from development/kafka-connect/
 #   make urls          print all exposed service URLs
-#   make logs          follow service logs (make logs SERVICES="kafka kafka-connect")
+#   make logs          follow service logs (make logs kafka-connect)
 #   make simulate      continuous INSERT/UPDATE/DELETE traffic on the source (Ctrl+C)
 #   make track         zv-debezium branch comparison (FEATURE=... RELEASE=...)
 #   make down          stop (make down ARGS=-v also wipes the volumes)
@@ -40,13 +40,20 @@ connectors: ## (re-)register the connectors, wait for RUNNING
 urls: ## print the exposed service URLs
 	@./scripts/print-urls.sh
 
-logs: ## follow service logs (make logs SERVICES="kafka kafka-connect" to pick)
+logs: ## follow service logs: "make logs kafka-connect" or SERVICES="kafka kafka-connect"
 	@test -n "$$(docker ps -q --filter label=com.docker.compose.project=development)" \
 	  || { echo 'ERROR: no pipeline services running - start with: make up (or make up-dev)' >&2; exit 1; }
 	@services='$(SERVICES)'; \
+	extra='$(filter-out $@,$(MAKECMDGOALS))'; \
+	test -n "$$services" || services="$$extra"; \
 	test -n "$$services" || services='kafka kafka-connect postgres-source postgres-sink'; \
 	echo "== Following logs (Ctrl+C to stop): $$services"; \
 	docker compose -f development/docker-compose.yml logs -f --tail=50 $$services
+
+# "make logs kafka-connect" passes kafka-connect as an extra goal; swallow such
+# unknown goals so make doesn't abort with "No rule to make target".
+%:
+	@:
 
 simulate: ## continuous CDC traffic generator (Ctrl+C to stop)
 	@./scripts/simulate-changes.sh
