@@ -1,0 +1,19 @@
+# Optional add-on for the autokc `development/docker-compose.yml` stack.
+# Only needed for zv-simulator's network-cut-source / network-latency-source
+# scenarios - every other scenario needs nothing beyond the base stack.
+#
+# Usage: from the autokc repo root,
+#   docker compose -f development/docker-compose.yml \
+#                   -f ../zv-simulator/docker-compose.override.yml up -d toxiproxy
+#
+# Then point Debezium at the proxy instead of postgres-source directly -
+# see README.md "Network fault setup".
+
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "8474:8474"   # control API - zv_simulator.toxiproxy_ctl talks to this
+      - "15432:15432" # proxied postgres-source - point Debezium here instead
+    networks:
+      - default

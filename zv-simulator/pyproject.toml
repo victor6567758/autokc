@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zv-simulator"
+version = "0.1.0"
+description = "Deterministic fault injector for the zv-monitor / zv-debezium pipeline. Injects known failure classes (replication, connection, resource, lag, worker faults) and verifies zv-monitor actually detects them via Loki + Prometheus."
+requires-python = ">=3.10"
+dependencies = [
+    "docker>=7.0.0",
+    "psycopg2-binary>=2.9",
+    "requests>=2.31",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+zv-simulator = "zv_simulator.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["zv_simulator*"]

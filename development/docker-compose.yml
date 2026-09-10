@@ -246,7 +246,9 @@ services:
     command: ["-config.file=/etc/promtail/config.yml"]
 
   # ---------------------------------------------------------- zv-monitor --
-  # Kafka Connector Monitor: polls Connect REST, exposes connector health as
+  # Kafka Connector Monitor: consumes the Connect worker's compacted
+  # connect-status topic as the primary connector/task status source (REST
+  # polling as fallback), exposes connector health as
   # JMX metrics on :5558, and polls Loki for a filtered set of log signatures.
   # Two run modes: containerized here (make up) or standalone on the host
   # (make up-dev + IDE). Only the container mode shows up in Grafana: promtail
@@ -266,8 +268,11 @@ services:
     # NOTE: deliberately no dependency on prometheus - prometheus depends on
     # this service as one of its scrape targets, so a dep here would close a
     # dependency cycle. zv-monitor polls PROMETHEUS_URL and simply retries
-    # until prometheus is up.
+    # until prometheus is up. The kafka dep is for the status topic consumer
+    # (kafka-connect already implies it transitively; explicit because the
+    # consumer talks to the broker directly).
     depends_on:
+      - kafka
       - kafka-connect
       - loki
     ports:
@@ -277,6 +282,11 @@ services:
       # Leave CONNECTOR_NAMES unset to auto-discover, or pin explicitly:
       CONNECTOR_NAMES: "inventory-source,customers-sink"
       POLL_INTERVAL_MS: "5000"
+      # topic feed on/off; REST status polling always runs
+      STATUS_TOPIC_ENABLED: "true"
+      STATUS_BOOTSTRAP_SERVERS: kafka:29092
+      STATUS_TOPIC: connect-status
+      STATUS_GROUP_ID: zv-monitor
       LOKI_URL: http://loki:3100
       LOG_POLL_INTERVAL_MS: "10000"
       LOG_LOOKBACK_SECONDS: "30"

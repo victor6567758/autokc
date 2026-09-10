@@ -150,6 +150,36 @@ the host, and Prometheus scrapes your local instance through
 `host.docker.internal:5558`, so the Grafana dashboard works unchanged.
 `make up` brings the container variant back.
 
+### Connector status feeds: status topic + REST polling
+
+zv-monitor reads connector/task statuses from the Connect worker's
+status storage topic (`connect-status` - `status.storage.topic` in
+`development/kafka-connect/connect-distributed.properties`): the same
+compacted topic Connect itself persists to, so the monitor sees exactly what
+Connect knows. Keys are `status-connector-<name>` and
+`status-task-<connector>-<task>`; a null value (tombstone) means the
+connector/task was deleted. Connectors are discovered from the topic itself -
+`CONNECTOR_NAMES` does not apply to it.
+
+On startup the consumer replays the compacted topic from the beginning - that
+replay *is* the state snapshot (no REST bootstrap). The per-connector
+`ConnectorHealth` JMX metrics are updated during the replay already, so the
+Grafana dashboard works from the first seconds; `connector-unhealthy` /
+`connector-recovered` events and remediation callbacks only fire for records
+consumed after the replay caught up with the live head, on state transitions.
+
+The REST poller (`GET /connectors/{name}/status`, driven by
+`CONNECT_REST_URL` / `CONNECTOR_NAMES` / `POLL_INTERVAL_MS`) runs in parallel
+with the same events + MBeans; `STATUS_TOPIC_ENABLED=false` disables the
+topic feed, leaving REST only.
+
+| variable | default (host run) | in compose | meaning |
+|---|---|---|---|
+| `STATUS_TOPIC_ENABLED` | `true` | `true` | topic feed on/off; REST polling always runs |
+| `STATUS_BOOTSTRAP_SERVERS` | `localhost:9092` | `kafka:29092` | bootstrap address of the Kafka cluster running Connect |
+| `STATUS_TOPIC` | `connect-status` | `connect-status` | Connect `status.storage.topic` |
+| `STATUS_GROUP_ID` | `zv-monitor` | `zv-monitor` | consumer group id - offsets are never committed, every start replays the full snapshot |
+
 ### Log levels
 
 Every component's verbosity is a plain environment knob at bring-up time -

@@ -1,10 +1,15 @@
 connect:
   restUrl: http://localhost:8083
+  # REST status flow - runs in parallel with the status topic feed
   connectorNames: []
   pollIntervalMs: 5000
+  statusTopic:
+    enabled: true
+    bootstrapServers: localhost:9092
+    topic: connect-status
+    groupId: zv-monitor
 
 logs:
-  enabled: true
   lokiUrl: http://localhost:3100
   pollIntervalMs: 10000
   # How far back the first poll of each pattern looks.
@@ -15,7 +20,6 @@ logs:
   patternsFile: analysis/loki-log-patterns.yaml
 
 metrics:
-  enabled: true
   prometheusUrl: http://localhost:9090
   pollIntervalMs: 15000
   # MetricPattern queries loaded at startup (com.zv.metrics.MetricPatternCatalog);

@@ -43,6 +43,10 @@
     <version.mockito>5.12.0</version.mockito>
     <version.awaitility>4.2.1</version.awaitility>
     <version.commons-lang3>3.14.0</version.commons-lang3>
+    <!-- Kafka client for zv-monitor's connect-status topic consumer; version
+         matches the stack's broker / Kafka Connect runtime (Apache Kafka 3.7
+         images, see development/docker-compose.yml). -->
+    <version.kafka>3.7.0</version.kafka>
     <version.lombok>1.18.36</version.lombok>
     <!-- Dropwizard Metrics 3.2.6: the last release whose classes live under
          the com.codahale.metrics.* packages (the 4.x line renamed them to
@@ -136,6 +140,13 @@
         <groupId>org.apache.commons</groupId>
         <artifactId>commons-lang3</artifactId>
         <version>${version.commons-lang3}</version>
+      </dependency>
+
+      <!-- Kafka client for zv-monitor's connect-status topic consumer -->
+      <dependency>
+        <groupId>org.apache.kafka</groupId>
+        <artifactId>kafka-clients</artifactId>
+        <version>${version.kafka}</version>
       </dependency>
 
       <dependency>

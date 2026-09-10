@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class ZvMonitorAppTest {
+class ZvMonitorServiceTest {
 
     @Test
     void stopSchedulerInterruptsStuckTaskAfterGraceInsteadOfWaitingItOut() throws Exception {
@@ -29,7 +29,7 @@ class ZvMonitorAppTest {
         // a plain shutdown() would block on the 60s sleep; after graceMs the
         // interrupt path must cut through, and the call return shortly after
         long start = System.nanoTime();
-        ZvMonitorApp.stopScheduler(scheduler, 3_000, 2_000);
+        ZvMonitorService.stopScheduler(scheduler, 3_000, 2_000);
         long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
 
         assertTrue(scheduler.isTerminated(), "scheduler should be terminated");

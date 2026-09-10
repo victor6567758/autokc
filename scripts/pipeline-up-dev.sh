@@ -45,6 +45,7 @@ echo '  CONNECT_REST_URL=http://localhost:8083 \'
 echo '  CONNECTOR_NAMES=inventory-source,customers-sink \'
 echo '  java -javaagent:lib/jmx_prometheus_javaagent-0.20.0.jar=5558:development/monitoring/jmx-exporter/zv-monitor-jmx.yml \'
 echo '       -jar zv-monitor/target/zv-monitor.jar'
+echo '(status feeds: connect-status topic + REST polling; topic off with STATUS_TOPIC_ENABLED=false)'
 echo
 echo '(jar version matches version.jmx-prometheus-javaagent in the parent pom;'
 echo ' build it with: mvn -q clean package -pl zv-monitor -am)'

@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -28,19 +29,26 @@ public record ZvMonitorConfig(
         String connectRestUrl,
         List<String> connectorNames,
         long pollIntervalMs,
-        boolean logEventsEnabled,
         String lokiUrl,
         long logPollIntervalMs,
         long logLookbackSeconds,
         String logPatternsFile,
-        boolean metricEventsEnabled,
         String prometheusUrl,
         long metricPollIntervalMs,
-        String metricPatternsFile) {
+        String metricPatternsFile,
+        boolean statusTopicEnabled,
+        String statusBootstrapServers,
+        String statusTopic,
+        String statusGroupId) {
 
     private static final String RESOURCE = "/zv-monitor.yml";
 
     public static ZvMonitorConfig load() {
+        return load(Map.of());
+    }
+
+    /** CLI overrides use the same keys as the env layer and win over it. */
+    public static ZvMonitorConfig load(Map<String, String> overrides) {
         ObjectMapper yaml = new ObjectMapper(new YAMLFactory());
         JsonNode root;
         try (InputStream in = ZvMonitorConfig.class.getResourceAsStream(RESOURCE)) {
@@ -49,7 +57,13 @@ public record ZvMonitorConfig(
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read " + RESOURCE, e);
         }
-        return of(root, System.getenv());
+        Map<String, String> env = System.getenv();
+        if (overrides.isEmpty()) {
+            return of(root, env);
+        }
+        Map<String, String> merged = new HashMap<>(env);
+        merged.putAll(overrides);
+        return of(root, merged);
     }
 
     static ZvMonitorConfig of(JsonNode root, Map<String, String> env) {
@@ -57,17 +71,20 @@ public record ZvMonitorConfig(
                 envText(env, "CONNECT_REST_URL", text(root.at("/connect/restUrl"), "http://localhost:8083")),
                 envNames(env, root),
                 envLong(env, "POLL_INTERVAL_MS", longValue(root.at("/connect/pollIntervalMs"), 5000)),
-                envBool(env, "LOG_EVENTS_ENABLED", boolValue(root.at("/logs/enabled"), true)),
                 envText(env, "LOKI_URL", text(root.at("/logs/lokiUrl"), "http://localhost:3100")),
                 envLong(env, "LOG_POLL_INTERVAL_MS", longValue(root.at("/logs/pollIntervalMs"), 10000)),
                 envLong(env, "LOG_LOOKBACK_SECONDS", longValue(root.at("/logs/lookbackSeconds"), 30)),
                 resolveCatalogPath(envText(env, "LOG_PATTERNS_FILE",
                         text(root.at("/logs/patternsFile"), "analysis/loki-log-patterns.yaml"))),
-                envBool(env, "METRICS_EVENTS_ENABLED", boolValue(root.at("/metrics/enabled"), true)),
                 envText(env, "PROMETHEUS_URL", text(root.at("/metrics/prometheusUrl"), "http://localhost:9090")),
                 envLong(env, "METRICS_POLL_INTERVAL_MS", longValue(root.at("/metrics/pollIntervalMs"), 15000)),
                 resolveCatalogPath(envText(env, "METRIC_PATTERNS_FILE",
-                        text(root.at("/metrics/patternsFile"), "analysis/prometheus-metrics.yaml"))));
+                        text(root.at("/metrics/patternsFile"), "analysis/prometheus-metrics.yaml"))),
+                envBool(env, "STATUS_TOPIC_ENABLED", boolValue(root.at("/connect/statusTopic/enabled"), true)),
+                envText(env, "STATUS_BOOTSTRAP_SERVERS",
+                        text(root.at("/connect/statusTopic/bootstrapServers"), "localhost:9092")),
+                envText(env, "STATUS_TOPIC", text(root.at("/connect/statusTopic/topic"), "connect-status")),
+                envText(env, "STATUS_GROUP_ID", text(root.at("/connect/statusTopic/groupId"), "zv-monitor")));
     }
 
     public ZvMonitorConfig {
@@ -79,6 +96,18 @@ public record ZvMonitorConfig(
         }
         if (prometheusUrl == null || prometheusUrl.isBlank()) {
             throw new IllegalArgumentException("metrics.prometheusUrl / PROMETHEUS_URL must not be blank");
+        }
+        if (statusTopicEnabled) {
+            if (statusBootstrapServers == null || statusBootstrapServers.isBlank()) {
+                throw new IllegalArgumentException(
+                        "connect.statusTopic.bootstrapServers / STATUS_BOOTSTRAP_SERVERS must not be blank");
+            }
+            if (statusTopic == null || statusTopic.isBlank()) {
+                throw new IllegalArgumentException("connect.statusTopic.topic / STATUS_TOPIC must not be blank");
+            }
+            if (statusGroupId == null || statusGroupId.isBlank()) {
+                throw new IllegalArgumentException("connect.statusTopic.groupId / STATUS_GROUP_ID must not be blank");
+            }
         }
         if (logPatternsFile == null || logPatternsFile.isBlank()) {
             throw new IllegalArgumentException("logs.patternsFile / LOG_PATTERNS_FILE must not be blank");

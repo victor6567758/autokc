@@ -14,13 +14,14 @@
 #   make down          stop (make down ARGS=-v also wipes the volumes)
 #   make clean-postgres wipe the Postgres data volumes and re-init both DBs
 #   make clean-kafka    wipe Kafka data (topics, connector state) + restart broker/worker
+#   make clean-all      mvn clean (all modules) + clean-postgres + clean-kafka
 #   make full           full   build with IT tests
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 MAKEFLAGS += --no-print-directory
 
-.PHONY: help up up-dev connectors urls logs simulate track down clean-postgres clean-kafka full
+.PHONY: help up up-dev connectors urls logs simulate track down clean-postgres clean-kafka clean-all full
 
 help: ## show this help
 	@echo 'zv-monitor pipeline - targets (make <target>):'
@@ -77,5 +78,11 @@ clean-kafka: ## wipe Kafka data (topics, connector state) and restart broker + w
 	@docker compose -f development/docker-compose.yml up -d kafka kafka-connect
 	@echo 'Done. Connectors are gone (their configs lived in Kafka) - re-register with:'
 	@echo '  make connectors'
+
+clean-all: ## full clean: mvn clean (all modules) + clean-postgres + clean-kafka
+	@mvn clean
+	@$(MAKE) clean-postgres
+	@$(MAKE) clean-kafka
+
 full:
 	mvn clean install -Passembly,run-its

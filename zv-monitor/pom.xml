@@ -42,6 +42,15 @@
       <artifactId>jackson-databind</artifactId>
     </dependency>
 
+    <!-- Kafka client for the connect-status topic consumer (com.zv.connect.
+         ConnectStatusTopicConsumer) - the PRIMARY connector/task status
+         source; the REST poller stays as the fallback. Version managed by the
+         parent pom to match the stack's Kafka (3.7). -->
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+    </dependency>
+
     <!-- YAML parsing of the classpath zv-monitor.yml config -->
     <dependency>
       <groupId>com.fasterxml.jackson.dataformat</groupId>

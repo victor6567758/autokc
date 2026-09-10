@@ -50,10 +50,10 @@ class ZvMonitorConfigTest {
         assertEquals("http://localhost:8083", config.connectRestUrl());
         assertTrue(config.connectorNames().isEmpty(), "shipped config auto-discovers connectors");
         assertEquals(5000, config.pollIntervalMs());
-        assertTrue(config.logEventsEnabled());
         assertEquals("http://localhost:3100", config.lokiUrl());
         assertEquals(10000, config.logPollIntervalMs());
         assertEquals(30, config.logLookbackSeconds());
+        assertTrue(config.statusTopicEnabled());
     }
 
     @Test
@@ -62,8 +62,8 @@ class ZvMonitorConfigTest {
 
         assertEquals("http://localhost:8083", config.connectRestUrl());
         assertEquals(5000, config.pollIntervalMs());
-        assertTrue(config.logEventsEnabled());
         assertEquals("http://localhost:3100", config.lokiUrl());
+        assertTrue(config.statusTopicEnabled());
     }
 
     @Test
@@ -74,7 +74,6 @@ class ZvMonitorConfigTest {
                   connectorNames: [inventory-source, customers-sink]
                   pollIntervalMs: 250
                 logs:
-                  enabled: false
                   lokiUrl: http://loki:3100
                   pollIntervalMs: 1500
                   lookbackSeconds: 90
@@ -83,7 +82,6 @@ class ZvMonitorConfigTest {
         assertEquals("http://kafka-connect:8083", config.connectRestUrl());
         assertEquals(List.of("inventory-source", "customers-sink"), config.connectorNames());
         assertEquals(250, config.pollIntervalMs());
-        assertFalse(config.logEventsEnabled());
         assertEquals("http://loki:3100", config.lokiUrl());
         assertEquals(1500, config.logPollIntervalMs());
         assertEquals(90, config.logLookbackSeconds());
@@ -126,6 +124,49 @@ class ZvMonitorConfigTest {
                 () -> ZvMonitorConfig.of(yaml("connect: {restUrl: \"\"}"), Map.of()));
         assertThrows(IllegalArgumentException.class,
                 () -> ZvMonitorConfig.of(yaml("connect: {pollIntervalMs: 0}"), Map.of()));
+    }
+
+    @Test
+    void statusTopicDefaultsMatchTheDevStack() {
+        ZvMonitorConfig config = ZvMonitorConfig.of(yaml("{}"), Map.of());
+
+        assertTrue(config.statusTopicEnabled());
+        assertEquals("localhost:9092", config.statusBootstrapServers());
+        assertEquals("connect-status", config.statusTopic());
+        assertEquals("zv-monitor", config.statusGroupId());
+    }
+
+    @Test
+    void statusTopicYamlAndEnvOverrides() {
+        ZvMonitorConfig config = ZvMonitorConfig.of(yaml("""
+                connect:
+                  statusTopic:
+                    enabled: false
+                    bootstrapServers: kafka:9092
+                    topic: overridden-topic
+                """), Map.of(
+                "STATUS_TOPIC_ENABLED", "true",
+                "STATUS_TOPIC", "connect-status",
+                "STATUS_GROUP_ID", "monitor-2"));
+
+        assertTrue(config.statusTopicEnabled()); // env wins over yaml
+        assertEquals("kafka:9092", config.statusBootstrapServers());
+        assertEquals("connect-status", config.statusTopic());
+        assertEquals("monitor-2", config.statusGroupId());
+    }
+
+    @Test
+    void statusTopicValidationAppliesOnlyWhenEnabled() {
+        assertThrows(IllegalArgumentException.class,
+                () -> ZvMonitorConfig.of(yaml("connect: {statusTopic: {bootstrapServers: \"\"}}"), Map.of()));
+
+        ZvMonitorConfig disabled = ZvMonitorConfig.of(yaml("""
+                connect:
+                  statusTopic:
+                    enabled: false
+                    topic: ""
+                """), Map.of());
+        assertFalse(disabled.statusTopicEnabled()); // blanks accepted while disabled
     }
 
     @Test
