@@ -12,10 +12,23 @@ dependencies = [
     "psycopg2-binary>=2.9",
     "requests>=2.31",
     "PyYAML>=6.0",
+    "python-dotenv>=1.0",
 ]
 
 [project.scripts]
-zv-simulator = "zv_simulator.cli:main"
+zv-simulator = "cli:main"
 
-[tool.setuptools.packages.find]
-include = ["zv_simulator*"]
+# Flat layout: modules live directly in zv-simulator/ (the dashed directory
+# can't be a Python package), scenarios stay a proper subpackage.
+[tool.setuptools]
+py-modules = [
+    "cli",
+    "config",
+    "connect_rest",
+    "docker_ctl",
+    "pg_faults",
+    "report",
+    "toxiproxy_ctl",
+    "verifier",
+]
+packages = ["scenarios"]

@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from zv_simulator.scenarios import REGISTRY, run_scenario, run_category
-from zv_simulator.report import print_result, print_summary, write_json
+from scenarios import REGISTRY, run_scenario, run_category
+from report import print_result, print_summary, write_json
 
 
 def cmd_list(args):

@@ -4,9 +4,11 @@ infrastructure-level faults (docker_ctl) or data-level faults (pg_faults).
 """
 from __future__ import annotations
 
+import time
+
 import requests
 
-from zv_simulator import CONNECT_REST_URL
+from config import CONNECT_REST_URL
 
 
 class ConnectRest:
@@ -61,10 +63,24 @@ class ConnectRest:
     def flap(self, connector: str, cycles: int, interval_s: float = 2.0):
         """Pause/resume in a tight loop - a config-plane way to make a
         connector's task status flap without touching infrastructure."""
-        import time
-
         for _ in range(cycles):
             self.pause(connector)
             time.sleep(interval_s)
             self.resume(connector)
             time.sleep(interval_s)
+
+    def wait_running(self, connector: str, timeout_s: float = 90.0, poll_s: float = 2.0) -> bool:
+        """Wait until the connector AND all its tasks report RUNNING.
+        Use after a config swap, so a fault lands on a pipeline that is
+        healthy through the new path rather than mid-restart."""
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            try:
+                st = self.status(connector)
+                states = [st["connector"]["state"]] + [t["state"] for t in st.get("tasks", [])]
+                if states and all(s == "RUNNING" for s in states):
+                    return True
+            except requests.RequestException:
+                pass  # worker rebalancing mid-restart - keep polling
+            time.sleep(poll_s)
+        return False

@@ -7,7 +7,7 @@ after it.
 
 Usage from a scenarios/*.py module:
 
-    from zv_simulator.scenarios import scenario
+    from scenarios import scenario
 
     @scenario(
         id="replication-slot-issue",
@@ -26,12 +26,12 @@ import traceback
 from dataclasses import dataclass
 from typing import Callable, Generator
 
-from zv_simulator.docker_ctl import DockerCtl
-from zv_simulator.connect_rest import ConnectRest
-from zv_simulator.pg_faults import PgFaults
-from zv_simulator.toxiproxy_ctl import ToxiproxyCtl
-from zv_simulator.verifier import Verifier, Expectation
-from zv_simulator.report import ScenarioResult
+from docker_ctl import DockerCtl
+from connect_rest import ConnectRest
+from pg_faults import PgFaults
+from toxiproxy_ctl import ToxiproxyCtl
+from verifier import Verifier, Expectation
+from report import ScenarioResult
 
 
 @dataclass
@@ -77,13 +77,19 @@ def run_scenario(scenario_id: str, ctx: Context | None = None) -> ScenarioResult
     ctx = ctx or _make_context()
     gen = sd.fn(ctx)
 
-    injected_at = time.time()
     error = None
     checks = []
     cleanup_ok = True
+    injected_at = 0.0  # stays 0.0 if setup/injection failed before the fault went live
 
     try:
-        next(gen)  # runs injection, pauses at `yield`
+        next(gen)  # runs setup + injection, pauses at `yield`
+        # Anchor to the moment the fault went LIVE, not the moment the
+        # scenario started: self-provisioning scenarios (e.g. the network
+        # ones repointing the connector through toxiproxy) restart the
+        # connector during setup, and events raised by that restart must
+        # not satisfy the expectations.
+        injected_at = time.time()
         verifier = Verifier()
         checks = verifier.check_all(sd.expects, since_ts=injected_at)
     except Exception:
@@ -106,5 +112,5 @@ def run_category(category: str) -> list[ScenarioResult]:
 
 
 # Import scenario modules for their registration side-effects.
-from zv_simulator.scenarios import connection_faults  # noqa: E402,F401
-from zv_simulator.scenarios import replication_faults  # noqa: E402,F401
+from scenarios import connection_faults  # noqa: E402,F401
+from scenarios import replication_faults  # noqa: E402,F401

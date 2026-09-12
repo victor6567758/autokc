@@ -4,7 +4,7 @@ import json
 import time
 from dataclasses import dataclass, asdict, field
 
-from zv_simulator.verifier import CheckResult
+from verifier import CheckResult
 
 
 @dataclass

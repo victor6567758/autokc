@@ -16,8 +16,9 @@ model correctly names the injected fault from that emission alone.
 ## Prerequisites
 
 - The `autokc` stack up: `make up` or `make up-dev` from the autokc repo root.
-- Python 3.10+: `pip install -e .` from this directory (the package code lives
-  in `zv_simulator/`; the console script `zv-simulator` lands on your PATH).
+- Python 3.10+: `pip install -e .` from this directory (the module code
+  lives directly here - flat layout; the console script `zv-simulator`
+  lands on your PATH).
 - Network access from wherever you run this to `localhost:8083` (Connect),
   `:9090` (Prometheus), `:3100` (Loki), `:5432`/`:5433` (Postgres source/sink).
   Works fine run directly on the host if the stack's ports are published as
@@ -25,9 +26,12 @@ model correctly names the injected fault from that emission alone.
 - Docker socket access (docker_ctl resolves containers by compose labels via
   docker-py) for the infra-level scenarios (`kafka-broker-down`, ...).
 
-Endpoints/names can be overridden with `ZV_SIM_*` env vars - see
-`zv_simulator/__init__.py` (e.g. `ZV_SIM_CONNECT_URL`, `ZV_SIM_PG_SOURCE_PORT`,
-`ZV_SIM_SLOT_NAME`, `ZV_SIM_SOURCE_CONNECTOR`).
+Endpoints/names can be overridden via `zv-simulator/.env` (copy
+`.env.example` to get started) or plain `ZV_SIM_*` env vars - see
+`config.py`. An exported env var always wins over `.env`, and `.env`
+wins over the built-in defaults (e.g. `ZV_SIM_CONNECT_URL`,
+`ZV_SIM_PROM_URL`, `ZV_SIM_LOKI_URL`, `ZV_SIM_TOXIPROXY_URL`,
+`ZV_SIM_PG_SOURCE_PORT`, `ZV_SIM_SLOT_NAME`, `ZV_SIM_SOURCE_CONNECTOR`).
 
 ## Quick start
 
@@ -45,20 +49,20 @@ exits non-zero if anything failed or cleanup didn't restore the stack.
 
 | id | category | fault mechanism | expects |
 |---|---|---|---|
-| `replication-slot-issue` | replication | drop the active replication slot | log: `replication-slot-issue`, metric: `source-disconnected` |
-| `source-connection-terminated` | replication | kill the replication backend PID, slot untouched | log: `postgres-connection-terminated` |
-| `source-disconnect-loop` | replication | kill the backend 3x, 20s apart | metric: `source-disconnect-loop` |
-| `replication-privilege-revoked` | replication | `ALTER ROLE ... NOREPLICATION` mid-flight | log: `postgres-fatal` |
-| `publication-dropped` | replication | drop the publication, slot stays | log: NPE / uncaught task exception |
-| `slot-wal-retention-high` | replication | hold an open transaction while traffic flows | metric: `slot-wal-retention-high` (needs `scripts/simulate-changes.sh` running alongside, ~5-10min) |
-| `network-cut-source` | connection | Toxiproxy hard cut, source path | log: `jdbc-connection-error`, metric: `source-disconnected` |
-| `network-latency-source` | connection | Toxiproxy +3s latency, source path | metric: `source-stream-stalled` |
-| `jdbc-connection-error` | connection | bad `connection.url` pushed to the sink connector | log: `jdbc-connection-error`, metric: `task-not-running` |
-| `kafka-broker-down` | connection | kill the broker container | log: `kafka-broker-unreachable` |
+| `replication-slot-issue` | replication | drop the active replication slot | log: `replication-slot-issue`, metric: `source-disconnected`, event: `log/replication-slot-issue` |
+| `source-connection-terminated` | replication | kill the replication backend PID, slot untouched | log: `postgres-connection-terminated`, event: `log/postgres-connection-terminated` |
+| `source-disconnect-loop` | replication | kill the backend 3x, 20s apart | metric: `source-disconnect-loop`, event: `metric/source-disconnect-loop` |
+| `replication-privilege-revoked` | replication | `ALTER ROLE ... NOREPLICATION` mid-flight | log: `postgres-fatal`, event: `log/postgres-fatal` |
+| `publication-dropped` | replication | drop the publication, slot stays | log: NPE / uncaught task exception, event: `log/npe\|task-uncaught-exception` |
+| `slot-wal-retention-high` | replication | hold an open transaction while traffic flows | metric: `slot-wal-retention-high` (needs `scripts/simulate-changes.sh` running alongside, ~5-10min), event: `metric/slot-wal-retention-high` |
+| `network-cut-source` | connection | Toxiproxy hard cut, source path | log: `jdbc-connection-error`, metric: `source-disconnected`, events: both |
+| `network-latency-source` | connection | Toxiproxy +3s latency, source path | metric: `source-stream-stalled`, event: `metric/source-stream-stalled` |
+| `jdbc-connection-error` | connection | bad `connection.url` pushed to the sink connector | log: `jdbc-connection-error`, metric: `task-not-running`, events: both |
+| `kafka-broker-down` | connection | kill the broker container | log: `kafka-broker-unreachable`, event: `log/kafka-broker-unreachable` |
 
 Not yet built (see the design doc / next phases): resource exhaustion
 (`oom`, real heap pressure), worker-rebalance faults, sink lag / snapshot
-faults. `zv_simulator/scenarios/` is structured so each is its own module -
+faults. `scenarios/` is structured so each is its own module -
 add `resource_faults.py`, `lag_faults.py`, `worker_faults.py` the same way.
 
 ## Network fault setup (Toxiproxy)
@@ -67,29 +71,64 @@ add `resource_faults.py`, `lag_faults.py`, `worker_faults.py` the same way.
 connection to `postgres-source` routed through Toxiproxy, since Toxiproxy
 can only inject faults on traffic that actually passes through it.
 
-1. Bring up the proxy (from the autokc repo root):
-   ```bash
-   docker compose -f development/docker-compose.yml \
-                   -f zv-simulator/docker-compose.override.yml up -d toxiproxy
-   ```
-2. Point the source connector at it instead of `postgres-source` directly.
-   Easiest: copy `development/kafka-connect/inventory-source.json` to
-   `inventory-source-toxi.json` with:
-   ```json
-   "database.hostname": "toxiproxy",
-   "database.port": "15432",
-   ```
-   and re-register that variant when you want to run these two scenarios;
-   swap back to the original for everything else, since routing through
-   an idle proxy adds a hop for every other scenario for no benefit.
-3. `zv_simulator.toxiproxy_ctl.ensure_proxy()` creates the proxy mapping
-   (`toxiproxy:15432 -> postgres-source:5432`) idempotently on first use,
-   so you don't need to hit the Toxiproxy API by hand.
+**You set nothing up.** The scenarios self-provision, with escalating
+least-intrusiveness:
 
-Every other scenario needs no Toxiproxy setup at all.
+1. a toxiproxy that is already running (however it got started) is reused
+   untouched;
+2. else the optional `docker-compose.override.yml` service container, if
+   it exists but is stopped, is merely `docker start`ed - nothing is
+   recreated, compose is never invoked;
+3. else zv-simulator runs its own sidecar (`zv-sim-toxiproxy`) on the
+   stack's own network, with the control API bound to `127.0.0.1:8474`.
+
+The scenario then PUTs the source connector config over the Connect REST
+API with `database.hostname=toxiproxy / database.port=15432`, waits for
+the task to be RUNNING through the proxy (`wait_running`), and only then
+injects the fault - so the fault always lands on a known-good path.
+`toxiproxy_ctl.ensure_proxy()` creates the proxy mapping
+(`toxiproxy:15432 -> postgres-source:5432`) idempotently at the start of
+each run.
+
+Cleanup restores the original connector config, restarts the connector
+back onto `postgres-source` directly, and removes the fixture - but only
+if the simulator started it (sidecar removed, a started service container
+stopped again; a proxy you started yourself is left alone).
+
+zv-simulator never runs `docker compose` and never restarts or recreates
+stack services - the monitoring app and the rest of the stack are
+untouched. Keeping `docker-compose.override.yml` around is purely
+optional: start it with the two `-f` files from the repo root only if
+you'd rather manage the proxy as part of the stack; the scenarios detect
+and reuse it.
+
+Every other scenario needs no Toxiproxy involvement at all.
 
 ## Known findings (validated against the current stack)
 
+- `network-cut-source`: a hard network partition is INVISIBLE to
+  zv-monitor's metric path. Debezium's streaming metrics bean is tied to a
+  live streaming connection. Under a cut (verified across three live runs)
+  the `connected{streaming}` gauge never goes to 0 - it holds 1 while
+  Debezium retries in-task, then the whole series disappears from
+  Prometheus once the streaming source gives up (anywhere from seconds to
+  ~90s). `millisecondssincelastevent` stops being written the same way.
+  zv-monitor's `source-disconnected` (`connected == 0`) and
+  `source-stream-stalled` (`msSinceLastEvent > 60000`) rules are
+  therefore structurally blind to partitions - `== 0` and threshold rules
+  both are, because absent is neither (an instant query over a vanished
+  series returns no data, which matches nothing). What a partition IS
+  observable as: the log-based `jdbc-connection-error` (fires in seconds)
+  and, for metric checks, `absent(connected{streaming})` - the scenario
+  expects exactly those two shapes. If zv-monitor should catch partitions
+  as CRITICAL, it needs `absent()`-aware rules or an error-log-driven
+  disconnect rule.
+- `network-latency-source` is expected to currently FAIL, and that is a
+  finding about the same gap from the other side: with 3s latency TCP
+  stays up and events keep arriving (delayed), so `msSinceLastEvent`
+  never crosses 60s and no error logs appear - zv-monitor has no working
+  slow-network detector on this stack. (Same treatment as
+  `replication-slot-issue` below: keep the expectations, document the gap.)
 - `source-connection-terminated` and `jdbc-connection-error` pass end-to-end
   against `make up` (fault -> Loki/metric match within seconds).
 - `replication-slot-issue` currently FAILS - and that's a real finding, not a
@@ -119,7 +158,14 @@ Every other scenario needs no Toxiproxy setup at all.
 - **Three independent checks, not one.** `verifier.py` can tell you "Loki
   saw it but zv-monitor never emitted an Event" - that's a real bug in
   zv-monitor's own detection, distinct from "the fault didn't reproduce
-  at all."
+  at all." Event expectations (`kind="event"`) name a zv-monitor pattern
+  (`source` + `pattern` id from the same catalogs) and poll zv-monitor's
+  JMX-exported `zv_event_counter_lastepochmillis` anchored on the
+  injection timestamp - so events from *before* the run (bring-up chaos,
+  connector-unhealthy flapping) can never satisfy them, and the reported
+  latency is zv-monitor's own event time, not Prometheus scrape time.
+  A `pattern` containing `|` is treated as a label regex
+  (`"npe|task-uncaught-exception"`).
 - **Every scenario cleans up, even on failure.** Scenarios are written as
   generators (`yield` between inject and cleanup) specifically so
   `run_scenario()` can guarantee cleanup runs in a `finally`, whether

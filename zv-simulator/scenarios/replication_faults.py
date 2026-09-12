@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import threading
 
-from zv_simulator.scenarios import scenario, Context
-from zv_simulator.verifier import Expectation
-from zv_simulator import REPLICATION_SLOT, PUBLICATION_NAME
+from scenarios import scenario, Context
+from verifier import Expectation
+from config import REPLICATION_SLOT, PUBLICATION_NAME
 
 
 @scenario(
@@ -36,6 +36,13 @@ from zv_simulator import REPLICATION_SLOT, PUBLICATION_NAME
             kind="metric",
             query='debezium_postgres_connector_metrics_connected{context="streaming"} == 0',
             timeout_s=60,
+        ),
+        Expectation(
+            id="event:replication-slot-issue",
+            kind="event",
+            source="log",
+            pattern="replication-slot-issue",
+            timeout_s=90,
         ),
     ],
 )
@@ -65,6 +72,13 @@ def run_slot_drop(ctx: Context):
             'unexpected EOF on client connection|connection reset by peer"',
             timeout_s=30,
         ),
+        Expectation(
+            id="event:postgres-connection-terminated",
+            kind="event",
+            source="log",
+            pattern="postgres-connection-terminated",
+            timeout_s=60,
+        ),
     ],
 )
 def run_terminate_backend(ctx: Context):
@@ -91,6 +105,13 @@ def run_terminate_backend(ctx: Context):
             '{context="streaming"}[5m]) > 1',
             timeout_s=90,
         ),
+        Expectation(
+            id="event:source-disconnect-loop",
+            kind="event",
+            source="metric",
+            pattern="source-disconnect-loop",
+            timeout_s=120,
+        ),
     ],
 )
 def run_disconnect_loop(ctx: Context):
@@ -114,6 +135,13 @@ def run_disconnect_loop(ctx: Context):
             kind="log",
             query='{service=~"postgres-source|postgres-sink"} |~ "FATAL:"',
             timeout_s=60,
+        ),
+        Expectation(
+            id="event:postgres-fatal",
+            kind="event",
+            source="log",
+            pattern="postgres-fatal",
+            timeout_s=90,
         ),
     ],
 )
@@ -140,6 +168,15 @@ def run_revoke_replication(ctx: Context):
             '|~ "(?i)nullpointerexception|Task threw an uncaught and unrecoverable exception"',
             timeout_s=60,
         ),
+        Expectation(
+            # either zv-monitor pattern can fire depending on how Debezium
+            # dies on a missing publication - "|" makes the label a regex.
+            id="event:npe-or-uncaught",
+            kind="event",
+            source="log",
+            pattern="npe|task-uncaught-exception",
+            timeout_s=90,
+        ),
     ],
 )
 def run_drop_publication(ctx: Context):
@@ -165,6 +202,14 @@ def run_drop_publication(ctx: Context):
             kind="metric",
             query="zv_sql_wal_lsn_diff > 1073741824",
             timeout_s=600,
+            poll_interval_s=10,
+        ),
+        Expectation(
+            id="event:slot-wal-retention-high",
+            kind="event",
+            source="metric",
+            pattern="slot-wal-retention-high",
+            timeout_s=720,
             poll_interval_s=10,
         ),
     ],

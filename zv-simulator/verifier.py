@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-from zv_simulator import PROMETHEUS_URL, LOKI_URL
+from config import PROMETHEUS_URL, LOKI_URL
 
 
 @dataclass
@@ -31,11 +31,19 @@ class CheckResult:
 @dataclass
 class Expectation:
     """One thing a scenario should cause. `kind` selects which client polls
-    it. `query` is a LogQL selector (log) or PromQL expression (metric)."""
+    it: "log" (Loki), "metric" (Prometheus) or "event" (zv-monitor's own
+    output). `query` is a LogQL selector (log) or PromQL expression (metric);
+    event expectations instead name the zv-monitor pattern - `source` is the
+    event origin ("log" or "metric") and `pattern` a pattern id from the same
+    catalogs the log/metric queries come from (loki-log-patterns.yaml /
+    prometheus-metrics.yaml). A `pattern` containing "|" is treated as a
+    label regex, e.g. "npe|task-uncaught-exception"."""
 
     id: str
-    kind: str  # "log" | "metric"
-    query: str
+    kind: str  # "log" | "metric" | "event"
+    query: str = ""  # log/metric only
+    source: str = "log"  # event only: zv-monitor event origin
+    pattern: str = ""  # event only: pattern id, or "a|b" for a regex match
     timeout_s: float = 45.0
     poll_interval_s: float = 2.0
 
@@ -99,10 +107,48 @@ class Verifier:
                     return CheckResult(
                         expectation.id, True, time.time(), f"{len(result)} series matched"
                     )
+            elif expectation.kind == "event":
+                fired_at = self.event_fired_since(expectation, since_ts)
+                if fired_at is not None:
+                    return CheckResult(
+                        expectation.id,
+                        True,
+                        fired_at,
+                        f"zv-monitor emitted {expectation.source}/{expectation.pattern}",
+                    )
             else:
                 raise ValueError(f"unknown expectation kind: {expectation.kind!r}")
             time.sleep(expectation.poll_interval_s)
         return CheckResult(expectation.id, False, None, f"timed out after {expectation.timeout_s}s")
+
+    # zv-monitor's own output, exported by its JMX sidecar
+    # (development/monitoring/jmx-exporter/zv-monitor-jmx.yml): one series
+    # per (source, pattern) event counter, value = epoch-ms of the last hit.
+    EVENT_LAST_TS_METRIC = "zv_event_counter_lastepochmillis"
+
+    def event_fired_since(self, expectation: Expectation, since_ts: float) -> float | None:
+        """Unix ts of the freshest matching zv-monitor event fired after
+        since_ts, or None if none did.
+
+        Anchors on EventCounter's LastEpochMillis, which zv-monitor refreshes
+        on every hit (EventCounter.recordHit), so events that fired *before*
+        injection (stack bring-up chaos, connector-unhealthy flapping) can
+        never satisfy the check - no baseline snapshot or increase() window
+        arithmetic needed. The matched value is zv-monitor's own event
+        timestamp, so the latency reported for an event check is the true
+        detection latency, not Prometheus scrape time.
+        """
+        if not expectation.pattern:
+            raise ValueError(f"event expectation {expectation.id!r} needs a pattern")
+        op = "=~" if "|" in expectation.pattern else "="
+        promql = (
+            f"max({self.EVENT_LAST_TS_METRIC}{{source=\"{expectation.source}\","
+            f"pattern{op}\"{expectation.pattern}\"}}) > {int(since_ts * 1000)}"
+        )
+        result = self.prom.instant(promql)
+        if not result:
+            return None
+        return float(result[0]["value"][1]) / 1000.0
 
     def check_all(self, expectations: list[Expectation], since_ts: float) -> list[CheckResult]:
         # Sequential is fine here - scenarios run one at a time and each

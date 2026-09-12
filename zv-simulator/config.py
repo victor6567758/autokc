@@ -1,18 +1,30 @@
-"""zv-simulator: deterministic fault injection for the zv-monitor pipeline.
+"""Shared config for zv-simulator: deterministic fault injection for the
+zv-monitor pipeline.
 
-Every scenario in zv_simulator.scenarios targets a failure class that
-zv-monitor already knows how to detect (see zv-monitor/analysis/
-loki-log-patterns.yaml and prometheus-metrics.yaml in the autokc repo).
-The point isn't just to break things - it's to close the loop: inject a
-known fault, then poll Loki/Prometheus/zv-monitor's own metrics to prove
-detection actually fires, and how fast.
+Every scenario in scenarios/ targets a failure class that zv-monitor
+already knows how to detect (see zv-monitor/analysis/loki-log-patterns.yaml
+and prometheus-metrics.yaml in the autokc repo). The point isn't just to
+break things - it's to close the loop: inject a known fault, then poll
+Loki/Prometheus/zv-monitor's own metrics to prove detection actually
+fires, and how fast.
 """
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Optional overrides live in zv-simulator/.env (see .env.example). The file is
+# loaded by path relative to this module - not the CWD - so the CLI behaves the
+# same regardless of where it's invoked from. Precedence:
+#   exported env var  >  zv-simulator/.env  >  the defaults below
+# (load_dotenv never overwrites variables that are already set in the shell.)
+load_dotenv(Path(__file__).with_name(".env"))
 
 # All defaults assume you're running zv-simulator on the host, against the
 # autokc `development/docker-compose.yml` stack brought up with `make up`
-# (or `make up-dev`). Override via env vars for other topologies.
+# (or `make up-dev`). Override via zv-simulator/.env or env vars for other
+# topologies.
 
 COMPOSE_PROJECT = os.environ.get("ZV_SIM_COMPOSE_PROJECT", "development")
 

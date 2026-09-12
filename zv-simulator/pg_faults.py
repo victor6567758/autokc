@@ -12,7 +12,7 @@ from __future__ import annotations
 import psycopg2
 import psycopg2.extensions
 
-from zv_simulator import PG_SOURCE, PG_SINK, REPLICATION_SLOT, PUBLICATION_NAME
+from config import PG_SOURCE, PG_SINK, REPLICATION_SLOT, PUBLICATION_NAME
 
 
 def _connect(cfg: dict, autocommit: bool = True):

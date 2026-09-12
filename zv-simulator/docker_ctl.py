@@ -10,7 +10,7 @@ import time
 import docker
 from docker.errors import NotFound
 
-from zv_simulator import COMPOSE_PROJECT
+from config import COMPOSE_PROJECT
 
 
 class DockerCtl:
@@ -74,6 +74,30 @@ class DockerCtl:
                 return True
             time.sleep(1)
         return False
+
+    def compose_network(self):
+        """The stack's default docker network, so fixture containers we start
+        (e.g. the toxiproxy sidecar) share DNS with the compose services.
+        Never creates a network - only finds the one the stack runs on."""
+        nets = self.client.networks.list(
+            filters={"label": f"com.docker.compose.project={self.compose_project}"}
+        )
+        for n in nets:
+            if n.name == f"{self.compose_project}_default":
+                return n
+        if nets:
+            return nets[0]
+        # label lookup came up empty - fall back to the network an actual
+        # stack container is attached to
+        for c in self.client.containers.list(
+            filters={"label": f"com.docker.compose.project={self.compose_project}"}
+        ):
+            for name in c.attrs["NetworkSettings"]["Networks"]:
+                return self.client.networks.get(name)
+        raise NotFound(
+            f"no network found for compose project '{self.compose_project}' - "
+            "is the stack up? (`make up` / `make up-dev`)"
+        )
 
     # -- network faults -------------------------------------------------
     # Prefer toxiproxy_ctl for graduated faults (latency, partial cuts).
