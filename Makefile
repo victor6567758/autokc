@@ -16,12 +16,15 @@
 #   make clean-kafka    wipe Kafka data (topics, connector state) + restart broker/worker
 #   make clean-all      mvn clean (all modules) + clean-postgres + clean-kafka
 #   make full           full   build with IT tests
+#   make simulator-list list zv-simulator fault scenarios
+#   make simulator-run  inject one fault: make simulator-run ID=replication-slot-issue
+#   make simulator-category CAT=replication   run a whole fault category
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 MAKEFLAGS += --no-print-directory
 
-.PHONY: help up up-dev connectors urls logs simulate track down clean-postgres clean-kafka clean-all full
+.PHONY: help up up-dev connectors urls logs simulate track down clean-postgres clean-kafka clean-all full simulator-install simulator-list simulator-run simulator-category
 
 help: ## show this help
 	@echo 'zv-monitor pipeline - targets (make <target>):'
@@ -62,12 +65,30 @@ simulate: ## continuous CDC traffic generator (Ctrl+C to stop)
 track: ## zv-debezium branch comparison
 	@./scripts/zv-debezium-track.sh
 
+simulator-install: ## create/reuse .venv, install zv-simulator (editable)
+	@test -x .venv/bin/pip || python3 -m venv .venv
+	@.venv/bin/pip install -e zv-simulator
+
+simulator-list: ## list zv-simulator fault scenarios
+	@./.venv/bin/zv-simulator list
+
+simulator-run: ## run one fault scenario: make simulator-run ID=replication-slot-issue
+	@if [ -z "$(ID)" ]; then echo 'usage: make simulator-run ID=<scenario>   (see make simulator-list)'; exit 2; fi
+	@./.venv/bin/zv-simulator run $(ID)
+
+simulator-category: ## run a whole category: make simulator-category CAT=replication
+	@if [ -z "$(CAT)" ]; then echo 'usage: make simulator-category CAT=<category>'; exit 2; fi
+	@./.venv/bin/zv-simulator run-category $(CAT)
+
 down: ## stop the stack (make down ARGS=-v also wipes the volumes)
 	@./scripts/pipeline-down.sh $(ARGS)
 
 clean-postgres: ## wipe the Postgres data volumes, re-init both DBs (stack keeps running)
 	@echo '== Wiping Postgres data volumes (fresh init from postgres/*-init) =='
 	@docker compose -f development/docker-compose.yml rm -sfv postgres-source postgres-sink
+	@# named volume: `compose rm -v` only drops anonymous volumes, so remove the
+	@# DB data volumes explicitly - otherwise this target would not wipe
+	@docker volume rm -f development_pgsource-data development_pgsink-data || true
 	@docker compose -f development/docker-compose.yml up -d --wait postgres-source postgres-sink
 	@echo 'Done. Note: CDC offsets live in Kafka - run `make clean-kafka connectors`'
 	@echo 'afterwards if the source connector should re-snapshot the fresh source.'
@@ -75,6 +96,9 @@ clean-postgres: ## wipe the Postgres data volumes, re-init both DBs (stack keeps
 clean-kafka: ## wipe Kafka data (topics, connector state) and restart broker + worker
 	@echo '== Wiping Kafka data volumes (topics + connector configs/offsets) =='
 	@docker compose -f development/docker-compose.yml rm -sfv kafka kafka-connect
+	@# named volume: `compose rm -v` only drops anonymous volumes, so remove the
+	@# broker data volume explicitly - otherwise this target would not wipe
+	@docker volume rm -f development_kafka-data || true
 	@docker compose -f development/docker-compose.yml up -d kafka kafka-connect
 	@echo 'Done. Connectors are gone (their configs lived in Kafka) - re-register with:'
 	@echo '  make connectors'
@@ -84,5 +108,5 @@ clean-all: ## full clean: mvn clean (all modules) + clean-postgres + clean-kafka
 	@$(MAKE) clean-postgres
 	@$(MAKE) clean-kafka
 
-full:
-	mvn clean install -Passembly,run-its
+full: ## full build with IT tests (-Drevapi.skip=true: Debezium's revapi API
+	mvn clean install -Passembly,run-its -Drevapi.skip=true

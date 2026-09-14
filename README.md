@@ -60,11 +60,26 @@ mvn package -DskipTests -pl zv-monitor
 ```
 
 A full-reactor `mvn install` also builds the fork's `io.debezium` connector
-modules (the root POM lists them so one command builds everything). Pass
-`-Drevapi.skip=true` when you do: Debezium's revapi API-compatibility gate
-(revapi-maven-plugin 0.15.1) dies locally with a log4j classpath error
-(`LoggerAdapter` missing), and it is a release-time check that is irrelevant
-for local builds. The `-pl` commands above never trigger it.
+modules (the root POM lists them so one command builds everything). Debezium's
+revapi API-compatibility gate (revapi-maven-plugin 0.15.1) is disabled for
+local builds: the fork's Postgres pom no longer re-enables it (the module used
+to opt in with `<revapi.skip>false</revapi.skip>` while the pom's skip-block
+also set it to `true` - last definition wins, so the check ran anyway), and
+`make full` passes `-Drevapi.skip=true` as a belt-and-suspenders override in
+case the fork poms are ever re-synced from upstream. The gate is a release-time
+check and dies locally with a log4j classpath error (`LoggerAdapter` missing)
+on Maven 3.9 / Java 21. The `-pl` commands above never trigger it.
+
+Java versions, two axes: everything compiles **with** JDK 21 but **for**
+Java 17. `<maven.compiler.release>17</maven.compiler.release>` (root POM)
+and `debezium.java.connector.target=17` (fork, with
+`debezium.java.source=21` / `jdk.min.version=21`) mirror upstream
+Debezium's model, so every artifact in the reactor targets the Java 17
+bytecode floor and runs on any Java 17+ Kafka Connect cluster. The
+*build JVM*, however, must be JDK 21 - the fork's QA tooling (checkstyle
+13.2.0) is itself compiled for Java 21 and fails on an older Maven JDK
+with `UnsupportedClassVersionError`. The stack images (`apache/kafka:3.7.0`
+for kafka/connect) run Temurin 21, comfortably above the floor.
 
 The JMX exporter agent jar in `lib/` comes with the first build above
 (maven-dependency-plugin, version pinned in the parent POM; `lib/` is

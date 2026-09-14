@@ -16,9 +16,11 @@ model correctly names the injected fault from that emission alone.
 ## Prerequisites
 
 - The `autokc` stack up: `make up` or `make up-dev` from the autokc repo root.
-- Python 3.10+: `pip install -e .` from this directory (the module code
-  lives directly here - flat layout; the console script `zv-simulator`
-  lands on your PATH).
+- Python 3.10+: `make simulator-install` from the autokc repo root (creates/
+  reuses `.venv` there and installs this package editable, putting the
+  `zv-simulator` console script into `.venv/bin`). All commands below are
+  wrapped as make targets, so you never need to activate the venv manually;
+  for direct CLI use: `.venv/bin/zv-simulator ...`.
 - Network access from wherever you run this to `localhost:8083` (Connect),
   `:9090` (Prometheus), `:3100` (Loki), `:5432`/`:5433` (Postgres source/sink).
   Works fine run directly on the host if the stack's ports are published as
@@ -26,9 +28,9 @@ model correctly names the injected fault from that emission alone.
 - Docker socket access (docker_ctl resolves containers by compose labels via
   docker-py) for the infra-level scenarios (`kafka-broker-down`, ...).
 
-Endpoints/names can be overridden via `zv-simulator/.env` (copy
-`.env.example` to get started) or plain `ZV_SIM_*` env vars - see
-`config.py`. An exported env var always wins over `.env`, and `.env`
+Endpoints/names can be overridden via the autokc repo-root `.env` (copy
+`zv-simulator/.env.example` there to get started) or plain `ZV_SIM_*` env
+vars - see `config.py`. An exported env var always wins over `.env`, and `.env`
 wins over the built-in defaults (e.g. `ZV_SIM_CONNECT_URL`,
 `ZV_SIM_PROM_URL`, `ZV_SIM_LOKI_URL`, `ZV_SIM_TOXIPROXY_URL`,
 `ZV_SIM_PG_SOURCE_PORT`, `ZV_SIM_SLOT_NAME`, `ZV_SIM_SOURCE_CONNECTOR`).
@@ -36,10 +38,10 @@ wins over the built-in defaults (e.g. `ZV_SIM_CONNECT_URL`,
 ## Quick start
 
 ```bash
-pip install -e .
-zv-simulator list
-zv-simulator run replication-slot-issue
-zv-simulator run-category replication
+make simulator-install
+make simulator-list
+make simulator-run ID=replication-slot-issue
+make simulator-category CAT=replication
 ```
 
 Each run prints per-expectation pass/fail with detection latency, and

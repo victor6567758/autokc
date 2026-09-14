@@ -88,6 +88,11 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # The apache/kafka image defaults log.dirs to /tmp/kafka-logs, which lives
+      # in the container's writable layer - every container recreation silently
+      # discarded the whole cluster (topics, KRaft metadata). Point log.dirs at
+      # the persistent named volume mounted below instead.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -96,6 +101,8 @@ services:
       KAFKA_OPTS: "-javaagent:/opt/jmx_prometheus_javaagent.jar=5559:/opt/kafka-broker-jmx.yml"
     volumes:
       - ./monitoring/jmx-exporter/kafka-broker-jmx.yml:/opt/kafka-broker-jmx.yml:ro
+      # broker data (topics, KRaft metadata) - survives container recreation
+      - kafka-data:/var/lib/kafka/data
 
   # ----------------------------------------------------- Schema Registry --
   # Apicurio Registry 3.x (Apache-2.0, CNCF sandbox): central
@@ -193,6 +200,11 @@ services:
       - "5432:5432"
     volumes:
       - ./postgres/source-init:/docker-entrypoint-initdb.d:ro
+      # named volume: DB data + WAL + Debezium replication slot survive
+      # container recreation (otherwise the connector's persisted offsets
+      # point at WAL a fresh initdb no longer has). initdb only runs on an
+      # empty dir - re-seed deliberately via `make clean-postgres`
+      - pgsource-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d sourcedb"]
       interval: 5s
@@ -210,6 +222,8 @@ services:
       - "5433:5432"
     volumes:
       - ./postgres/sink-init:/docker-entrypoint-initdb.d:ro
+      # named volume: sink state survives recreation, mirrors pgsource-data
+      - pgsink-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d sinkdb"]
       interval: 5s
@@ -361,5 +375,13 @@ services:
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
 
 volumes:
+  # broker data - shared with docker-compose.dev.yml (same compose project
+  # name), so topics survive switching between `make up` and `make up-dev`
+  # as well as container recreation
+  kafka-data:
+  # Postgres data - named so DB state survives recreation (same rationale as
+  # kafka-data); wipe deliberately via `make clean-postgres`
+  pgsource-data:
+  pgsink-data:
   loki-data:
   promtail-data:

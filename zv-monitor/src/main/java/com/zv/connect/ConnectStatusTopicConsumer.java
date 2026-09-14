@@ -171,8 +171,10 @@ public class ConnectStatusTopicConsumer {
                 } catch (WakeupException we) {
                     break; // close() woke us up
                 } catch (Exception e) {
+                    // e.toString(): recurring-retry log stays one line but still
+                    // shows the exception class when the message is null
                     LOGGER.error("status topic poll failed: {} - retrying in {}ms",
-                            e.getMessage(), POLL_ERROR_BACKOFF_MS);
+                            e.toString(), POLL_ERROR_BACKOFF_MS);
                     sleep(POLL_ERROR_BACKOFF_MS);
                     continue;
                 }

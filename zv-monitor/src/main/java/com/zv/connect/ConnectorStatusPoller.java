@@ -93,7 +93,10 @@ public class ConnectorStatusPoller {
                             "connector and all tasks RUNNING"));
                 }
             } catch (Exception e) {
-                LOGGER.error("Failed to poll status for connector '{}': {}", name, e.getMessage());
+                // log the full exception: transport failures (worker container
+                // down, DNS gone, ...) often carry a null message - e.getMessage()
+                // alone printed just "null" and hid the root cause
+                LOGGER.error("Failed to poll status for connector '{}'", name, e);
             }
         }
     }
