@@ -1,41 +1,76 @@
+"""zv-simulator - the single entry point.
+
+Argparse only: every command builds a Simulator (simulator.py) around one
+shared Context and renders results through a ReportWriter (report.py).
+The scenario classes themselves live in scenarios.py.
+"""
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import sys
 
-from scenarios import REGISTRY, run_scenario, run_category
-from report import print_result, print_summary, write_json
+from report import ReportWriter
+from scenarios import SCENARIOS
+from simulator import Simulator
 
 
 def cmd_list(args):
     by_cat: dict[str, list] = {}
-    for sd in REGISTRY.values():
-        by_cat.setdefault(sd.category, []).append(sd)
+    for scenario in SCENARIOS.values():
+        by_cat.setdefault(scenario.category, []).append(scenario)
     for cat in sorted(by_cat):
         print(f"\n{cat}:")
-        for sd in sorted(by_cat[cat], key=lambda s: s.id):
-            print(f"  {sd.id:<32} {sd.description.strip().splitlines()[0]}")
+        for s in sorted(by_cat[cat], key=lambda s: s.id):
+            print(f"  {s.id:<32} {s.description.strip().splitlines()[0]}")
 
 
 def cmd_run(args):
-    result = run_scenario(args.scenario_id)
-    print_result(result)
+    results = [Simulator().run_scenario(args.scenario_id)]
+    writer = ReportWriter()
+    for r in results:
+        writer.print_result(r)
+    writer.print_summary(results)
     if args.json:
-        write_json([result], args.json)
-    sys.exit(0 if result.passed else 1)
+        writer.write_json(results, args.json)
+    sys.exit(0 if all(r.passed for r in results) else 1)
 
 
 def cmd_run_category(args):
-    results = run_category(args.category)
+    results = Simulator().run_category(args.category)
+    writer = ReportWriter()
     for r in results:
-        print_result(r)
-    print_summary(results)
+        writer.print_result(r)
+    writer.print_summary(results)
     if args.json:
-        write_json(results, args.json)
+        writer.write_json(results, args.json)
+    sys.exit(0 if all(r.passed for r in results) else 1)
+
+
+def cmd_run_all(args):
+    # Explicit positional ids select a subset; --skip filters (comma-separated,
+    # repeatable) so CI can drop slow or known-gap scenarios from a sweep.
+    skipped = {s.strip() for part in (args.skip or []) for s in part.split(",") if s.strip()}
+    ids = list(args.ids) if args.ids else list(SCENARIOS)  # dict iterates ids
+    results = Simulator().run_all([sid for sid in ids if sid not in skipped])
+    writer = ReportWriter()
+    for r in results:
+        writer.print_result(r)
+    writer.print_summary(results)
+    if args.json:
+        writer.write_json(results, args.json)
     sys.exit(0 if all(r.passed for r in results) else 1)
 
 
 def main():
+    # INFO lines go to stderr (report.py owns stdout, keeping --json/capture
+    # clean); ZV_SIM_QUIET=1 drops the level to WARNING to silence them.
+    logging.basicConfig(
+        format="%(asctime)s %(message)s",
+        datefmt="%H:%M:%S",
+        level=logging.WARNING if os.environ.get("ZV_SIM_QUIET") else logging.INFO,
+    )
     parser = argparse.ArgumentParser(prog="zv-simulator")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -48,9 +83,25 @@ def main():
     p_run.set_defaults(func=cmd_run)
 
     p_cat = sub.add_parser("run-category", help="run every scenario in a category")
-    p_cat.add_argument("category", choices=sorted({sd.category for sd in REGISTRY.values()}))
+    p_cat.add_argument("category", choices=sorted({s.category for s in SCENARIOS.values()}))
     p_cat.add_argument("--json", help="write results JSON to this path")
     p_cat.set_defaults(func=cmd_run_category)
+
+    p_all = sub.add_parser(
+        "run-all",
+        help="run every scenario sequentially (category-ordered); "
+        "pass ids to run a subset, --skip to drop some from a full sweep",
+    )
+    p_all.add_argument("ids", nargs="*", help="optional: scenario ids to run (default: all)")
+    p_all.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        metavar="IDS",
+        help="scenario id(s) to skip, comma-separated; repeatable",
+    )
+    p_all.add_argument("--json", help="write results JSON to this path")
+    p_all.set_defaults(func=cmd_run_all)
 
     args = parser.parse_args()
     args.func(args)
@@ -58,3 +109,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

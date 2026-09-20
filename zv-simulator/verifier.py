@@ -12,12 +12,15 @@ failed injection, and exactly the kind of gap this tool exists to catch.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 
 import requests
 
 from config import PROMETHEUS_URL, LOKI_URL
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -48,6 +51,18 @@ class Expectation:
     poll_interval_s: float = 2.0
 
 
+# The "fault live" anchor (injected_at) is captured when the injection
+# generator yields - i.e. AFTER the fault call returned. Synchronous faults
+# (e.g. pg_terminate_backend, which makes postgres write its FATAL line
+# during the call) produce causal log lines stamped milliseconds BEFORE the
+# anchor, so an exact `line_ts > anchor` / `start=anchor` comparison drops
+# them. Poll with a small grace before the anchor; it must stay far below
+# the poll intervals (2s) and zv-monitor's own scrape cycle (5s) so setup
+# restart noise (the reason the anchor is post-injection) still can't
+# satisfy an expectation.
+ANCHOR_GRACE_S = 0.25
+
+
 class LokiClient:
     def __init__(self, base_url: str = LOKI_URL):
         self.base_url = base_url.rstrip("/")
@@ -60,7 +75,9 @@ class LokiClient:
         """
         params = {
             "query": logql,
-            "start": str(int(since_ts * 1e9)),
+            # ANCHOR_GRACE_S back so causal lines written during a synchronous
+            # injection (stamped just before the anchor) are inside the range
+            "start": str(int((since_ts - ANCHOR_GRACE_S) * 1e9)),
             "end": str(int(time.time() * 1e9)),
             "limit": 50,
         }
@@ -92,24 +109,39 @@ class Verifier:
         self.prom = PrometheusClient()
 
     def check(self, expectation: Expectation, since_ts: float) -> CheckResult:
-        deadline = time.time() + expectation.timeout_s
+        started = time.time()
+        last_beat = started
+        deadline = started + expectation.timeout_s
         while time.time() < deadline:
             if expectation.kind == "log":
                 entries = self.loki.query_since(expectation.query, since_ts)
                 if entries:
                     first = min(e["ts"] for e in entries)
+                    log.info(
+                        f"  + {expectation.id} fired after {max(0.0, first - since_ts):.1f}s"
+                        f" ({len(entries)} matching line(s))"
+                    )
                     return CheckResult(
                         expectation.id, True, first, f"{len(entries)} matching line(s)"
                     )
             elif expectation.kind == "metric":
                 result = self.prom.instant(expectation.query)
                 if result:
+                    now = time.time()
+                    log.info(
+                        f"  + {expectation.id} fired after {now - since_ts:.1f}s"
+                        f" ({len(result)} series matched)"
+                    )
                     return CheckResult(
-                        expectation.id, True, time.time(), f"{len(result)} series matched"
+                        expectation.id, True, now, f"{len(result)} series matched"
                     )
             elif expectation.kind == "event":
                 fired_at = self.event_fired_since(expectation, since_ts)
                 if fired_at is not None:
+                    log.info(
+                        f"  + {expectation.id} fired after {max(0.0, fired_at - since_ts):.1f}s"
+                        f" (zv-monitor emitted {expectation.source}/{expectation.pattern})"
+                    )
                     return CheckResult(
                         expectation.id,
                         True,
@@ -118,7 +150,15 @@ class Verifier:
                     )
             else:
                 raise ValueError(f"unknown expectation kind: {expectation.kind!r}")
+            now = time.time()
+            if now - last_beat >= 30:  # heartbeat so long budgets don't look hung
+                log.info(
+                    f"  ... {expectation.id}: no match yet"
+                    f" ({now - started:.0f}s/{expectation.timeout_s:.0f}s)"
+                )
+                last_beat = now
             time.sleep(expectation.poll_interval_s)
+        log.info(f"  x {expectation.id} timed out after {expectation.timeout_s:.0f}s")
         return CheckResult(expectation.id, False, None, f"timed out after {expectation.timeout_s}s")
 
     # zv-monitor's own output, exported by its JMX sidecar
@@ -131,19 +171,21 @@ class Verifier:
         since_ts, or None if none did.
 
         Anchors on EventCounter's LastEpochMillis, which zv-monitor refreshes
-        on every hit (EventCounter.recordHit), so events that fired *before*
-        injection (stack bring-up chaos, connector-unhealthy flapping) can
-        never satisfy the check - no baseline snapshot or increase() window
-        arithmetic needed. The matched value is zv-monitor's own event
-        timestamp, so the latency reported for an event check is the true
-        detection latency, not Prometheus scrape time.
+        on every hit (EventCounter.recordHit) with the matched line's own
+        timestamp, so events that fired *before* injection (stack bring-up
+        chaos, connector-unhealthy flapping) can never satisfy the check - no
+        baseline snapshot or increase() window arithmetic needed. The matched
+        value is zv-monitor's own event timestamp, so the latency reported
+        for an event check is the true detection latency, not Prometheus
+        scrape time.
         """
         if not expectation.pattern:
             raise ValueError(f"event expectation {expectation.id!r} needs a pattern")
         op = "=~" if "|" in expectation.pattern else "="
+        threshold_ms = int((since_ts - ANCHOR_GRACE_S) * 1000)
         promql = (
             f"max({self.EVENT_LAST_TS_METRIC}{{source=\"{expectation.source}\","
-            f"pattern{op}\"{expectation.pattern}\"}}) > {int(since_ts * 1000)}"
+            f"pattern{op}\"{expectation.pattern}\"}}) > {threshold_ms}"
         )
         result = self.prom.instant(promql)
         if not result:

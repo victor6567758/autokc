@@ -19,14 +19,21 @@ class DockerCtl:
         self.compose_project = compose_project
 
     def container(self, service: str):
-        """Return the running container for a compose service name."""
+        """Return the container for a compose service name, running or not.
+
+        `all=True` matters: containers.list() only returns *running*
+        containers by default, so a cleanup like kill() -> restart() would
+        otherwise raise NotFound for the freshly-killed container and leave
+        the service down for every scenario that follows.
+        """
         containers = self.client.containers.list(
+            all=True,
             filters={
                 "label": [
                     f"com.docker.compose.project={self.compose_project}",
                     f"com.docker.compose.service={service}",
                 ]
-            }
+            },
         )
         if not containers:
             raise NotFound(

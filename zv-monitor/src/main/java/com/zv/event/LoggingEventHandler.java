@@ -15,7 +15,7 @@ public class LoggingEventHandler implements EventHandler {
 
     @Override
     public void onEvent(Event event) {
-        String line = String.format("source=%s pattern=%s container=%s :: %s",
+        String line = String.format("-->   source=%s pattern=%s container=%s :: %s",
                 event.source(), event.patternId(), event.container(), event.message());
         switch (event.severity()) {
             case CRITICAL -> LOGGER.error(line);

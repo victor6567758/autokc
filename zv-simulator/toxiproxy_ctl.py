@@ -12,20 +12,29 @@ A hard network partition tends to produce the CRITICAL signature almost
 immediately; injected latency/timeout toxics are what actually exercise
 the WARNING path.
 
-The scenarios that need the proxy call ensure_toxiproxy() themselves -
-no manual docker-compose.override.yml step, no connector config file to
-swap. See that function for the escalation order.
+The scenarios that need the proxy call ToxiproxyFixture(docker).ensure()
+themselves - no manual docker-compose.override.yml step, no connector
+config file to swap. See that method for the escalation order.
 """
 from __future__ import annotations
 
-import os
 import time
 
+import docker.errors as docker_errors
 import requests
 
-from config import TOXIPROXY_URL
+from config import (
+    SIDECAR_IMAGE,
+    SIDECAR_LABEL,
+    SIDECAR_NAME,
+    TOXIPROXY_COMPOSE_SERVICE,
+    TOXIPROXY_HOST,
+    TOXIPROXY_LISTEN_PORT,
+    TOXIPROXY_URL,
+)
 
 PG_SOURCE_PROXY = "pg-source"
+
 
 # -- fixture lifecycle ------------------------------------------------------
 # The network scenarios need a toxiproxy in the connection path. zv-simulator
@@ -37,103 +46,112 @@ PG_SOURCE_PROXY = "pg-source"
 #      compose invocation;
 #   3. otherwise a simulator-owned sidecar (zv-sim-toxiproxy) is run on the
 #      stack's own network, and removed again at cleanup.
-# In every case the in-network hostname is "toxiproxy", so the connector
-# config the scenarios PUT is identical no matter which path provided it.
-
-TOXIPROXY_HOST = "toxiproxy"
-TOXIPROXY_LISTEN_PORT = "15432"
-SIDECAR_NAME = "zv-sim-toxiproxy"
-SIDECAR_LABEL = "zv-simulator.managed"
-SIDECAR_IMAGE = os.environ.get("ZV_SIM_TOXIPROXY_IMAGE", "ghcr.io/shopify/toxiproxy:2.9.0")
-COMPOSE_SERVICE = "toxiproxy"  # matches zv-simulator/docker-compose.override.yml
+# In every case the in-network hostname is TOXIPROXY_HOST (config.py), so
+# the connector config the scenarios PUT is identical no matter which path
+# provided it.
 
 
-def _find_container(docker, label_filters: list[str]):
-    found = docker.client.containers.list(all=True, filters={"label": label_filters})
-    return found[0] if found else None
+class ToxiproxyFixture:
+    """Guarantees a running toxiproxy for a fault window (and undoes
+    exactly what it had to do to get one). Wraps one DockerCtl."""
+
+    def __init__(self, docker, base_url: str = TOXIPROXY_URL):
+        self.docker = docker
+        self.base_url = base_url
+
+    def _find_container(self, label_filters: list[str]):
+        found = self.docker.client.containers.list(all=True, filters={"label": label_filters})
+        return found[0] if found else None
+
+    def _control_api_up(self, timeout: float = 2.0) -> bool:
+        try:
+            r = requests.get(f"{self.base_url.rstrip('/')}/proxies", timeout=timeout)
+            return r.status_code == 200
+        except requests.RequestException:
+            return False
+
+    def _wait_control_api(self, timeout_s: float = 20.0) -> None:
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if self._control_api_up():
+                return
+            time.sleep(0.5)
+        raise RuntimeError(
+            f"toxiproxy control API at {self.base_url} did not come up within {timeout_s:.0f}s"
+        )
 
 
-def _control_api_up(base_url: str, timeout: float = 2.0) -> bool:
-    try:
-        return requests.get(f"{base_url.rstrip('/')}/proxies", timeout=timeout).status_code == 200
-    except requests.RequestException:
-        return False
 
+    def ensure(self) -> str | None:
+        """Idempotently guarantee a running toxiproxy for the fault window.
 
-def _wait_control_api(base_url: str, timeout_s: float = 20.0) -> None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if _control_api_up(base_url):
-            return
-        time.sleep(0.5)
-    raise RuntimeError(
-        f"toxiproxy control API at {base_url} did not come up within {timeout_s:.0f}s"
-    )
+        Returns a token for stop(): None if one was already running
+        (not ours to stop), "service" if we started the override-file's
+        stopped container, "sidecar" if we ran our own. Never recreates,
+        reconfigures or restarts any stack service - the monitoring app
+        and everything else in the compose project are untouched.
+        """
+        if self._control_api_up():
+            # An orphaned sidecar from a crashed run is adopted AND owned again
+            # (so this run's cleanup removes it); anything else that happens to
+            # be running a toxiproxy is reused but never stopped by us.
+            ours = self._find_container([f"{SIDECAR_LABEL}=true"])
+            return "sidecar" if ours is not None else None
 
-
-def ensure_toxiproxy(docker, base_url: str = TOXIPROXY_URL) -> str | None:
-    """Idempotently guarantee a running toxiproxy for the fault window.
-
-    Returns a token for stop_toxiproxy(): None if one was already running
-    (not ours to stop), "service" if we started the override-file's stopped
-    container, "sidecar" if we ran our own. Never recreates, reconfigures
-    or restarts any stack service - the monitoring app and everything else
-    in the compose project are untouched.
-    """
-    if _control_api_up(base_url):
-        # An orphaned sidecar from a crashed run is adopted AND owned again
-        # (so this run's cleanup removes it); anything else that happens to
-        # be running a toxiproxy is reused but never stopped by us.
-        ours = _find_container(docker, [f"{SIDECAR_LABEL}=true"])
-        return "sidecar" if ours is not None else None
-
-    service = _find_container(
-        docker,
-        [
-            f"com.docker.compose.project={docker.compose_project}",
-            f"com.docker.compose.service={COMPOSE_SERVICE}",
-        ],
-    )
-    if service is not None:
-        service.start()
-        _wait_control_api(base_url)
-        return "service"
-
-    stale = _find_container(docker, [f"{SIDECAR_LABEL}=true"])
-    if stale is not None:
-        stale.remove(force=True)  # dead leftover from a crashed run
-
-    net = docker.compose_network()
-    sidecar = docker.client.containers.run(
-        SIDECAR_IMAGE,
-        name=SIDECAR_NAME,
-        detach=True,
-        labels={SIDECAR_LABEL: "true"},
-        # control API bound to loopback only - the host-side ToxiproxyCtl
-        # talks to it; the proxied postgres port stays network-internal
-        ports={"8474/tcp": ("127.0.0.1", 8474)},
-    )
-    net.connect(sidecar, aliases=[TOXIPROXY_HOST])
-    _wait_control_api(base_url)
-    return "sidecar"
-
-
-def stop_toxiproxy(docker, started: str | None) -> None:
-    """Undo exactly what ensure_toxiproxy() had to do - nothing more."""
-    if started == "sidecar":
-        c = _find_container(docker, [f"{SIDECAR_LABEL}=true"])
-        if c is not None:
-            c.remove(force=True)
-    elif started == "service":
-        service = _find_container(
-            docker,
+        service = self._find_container(
             [
-                f"com.docker.compose.project={docker.compose_project}",
-                f"com.docker.compose.service={COMPOSE_SERVICE}",
+                f"com.docker.compose.project={self.docker.compose_project}",
+                f"com.docker.compose.service={TOXIPROXY_COMPOSE_SERVICE}",
             ],
         )
         if service is not None:
-            service.stop(timeout=5)
+            try:
+                service.start()
+            except docker_errors.APIError:
+                # A stopped compose container whose network was recreated with the
+                # stack (`make down && make up`) references a deleted network and
+                # can never start again - remove the corpse and fall through to
+                # the sidecar path. compose recreates its own container from the
+                # override file the next time that stack variant comes up.
+                service.remove(force=True)
+            else:
+                self._wait_control_api()
+                return "service"
+
+        stale = self._find_container([f"{SIDECAR_LABEL}=true"])
+        if stale is not None:
+            stale.remove(force=True)  # dead leftover from a crashed run
+
+        net = self.docker.compose_network()
+        sidecar = self.docker.client.containers.run(
+            SIDECAR_IMAGE,
+            name=SIDECAR_NAME,
+            detach=True,
+            labels={SIDECAR_LABEL: "true"},
+            # control API bound to loopback only - the host-side ToxiproxyCtl
+            # talks to it; the proxied postgres port stays network-internal
+            ports={"8474/tcp": ("127.0.0.1", 8474)},
+        )
+        net.connect(sidecar, aliases=[TOXIPROXY_HOST])
+        self._wait_control_api()
+        return "sidecar"
+
+    def stop(self, started: str | None) -> None:
+        """Undo exactly what ensure() had to do - nothing more."""
+        if started == "sidecar":
+            c = self._find_container([f"{SIDECAR_LABEL}=true"])
+            if c is not None:
+                c.remove(force=True)
+        elif started == "service":
+            service = self._find_container(
+                [
+                    f"com.docker.compose.project={self.docker.compose_project}",
+                    f"com.docker.compose.service={TOXIPROXY_COMPOSE_SERVICE}",
+                ],
+            )
+            if service is not None:
+                service.stop(timeout=5)
+
 
 
 class ToxiproxyCtl:
@@ -147,7 +165,7 @@ class ToxiproxyCtl:
     def ensure_proxy(
         self,
         name: str = PG_SOURCE_PROXY,
-        listen: str = "0.0.0.0:15432",
+        listen: str = f"0.0.0.0:{TOXIPROXY_LISTEN_PORT}",
         upstream: str = "postgres-source:5432",
     ):
         """Idempotently create the proxy. Safe to call at the start of

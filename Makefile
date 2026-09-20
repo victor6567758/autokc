@@ -18,13 +18,14 @@
 #   make full           full   build with IT tests
 #   make simulator-list list zv-simulator fault scenarios
 #   make simulator-run  inject one fault: make simulator-run ID=replication-slot-issue
+#   make simulator-run-all   every scenario sequentially: make simulator-run-all [SKIP=slot-wal-retention-high,...]
 #   make simulator-category CAT=replication   run a whole fault category
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 MAKEFLAGS += --no-print-directory
 
-.PHONY: help up up-dev connectors urls logs simulate track down clean-postgres clean-kafka clean-all full simulator-install simulator-list simulator-run simulator-category
+.PHONY: help up up-dev connectors urls logs simulate track down clean-postgres clean-kafka clean-all full simulator-install simulator-list simulator-run simulator-run-all simulator-category
 
 help: ## show this help
 	@echo 'zv-monitor pipeline - targets (make <target>):'
@@ -65,20 +66,34 @@ simulate: ## continuous CDC traffic generator (Ctrl+C to stop)
 track: ## zv-debezium branch comparison
 	@./scripts/zv-debezium-track.sh
 
-simulator-install: ## create/reuse .venv, install zv-simulator (editable)
-	@test -x .venv/bin/pip || python3 -m venv .venv
-	@.venv/bin/pip install -e zv-simulator
+# zv-simulator runs from source - it is NOT installed as a package: every
+# target below inits/reuses the repo-root .venv (deps from
+# zv-simulator/requirements.txt) and calls cli.py explicitly, like the
+# other python scripts in this repo.
+VENV := .venv
+ZV_SIM := $(VENV)/bin/python zv-simulator/cli.py
+VENV_STAMP := $(VENV)/.deps-installed
 
-simulator-list: ## list zv-simulator fault scenarios
-	@./.venv/bin/zv-simulator list
+$(VENV_STAMP): zv-simulator/requirements.txt
+	@test -x $(VENV)/bin/pip || python3 -m venv $(VENV)
+	@$(VENV)/bin/pip install -q -r zv-simulator/requirements.txt
+	@touch $(VENV_STAMP)
 
-simulator-run: ## run one fault scenario: make simulator-run ID=replication-slot-issue
+simulator-install: $(VENV_STAMP) ## create/reuse .venv, install zv-simulator deps
+
+simulator-list: $(VENV_STAMP) ## list zv-simulator fault scenarios
+	@$(ZV_SIM) list
+
+simulator-run: $(VENV_STAMP) ## run one fault scenario: make simulator-run ID=replication-slot-issue
 	@if [ -z "$(ID)" ]; then echo 'usage: make simulator-run ID=<scenario>   (see make simulator-list)'; exit 2; fi
-	@./.venv/bin/zv-simulator run $(ID)
+	@$(ZV_SIM) run $(ID)
 
-simulator-category: ## run a whole category: make simulator-category CAT=replication
+simulator-run-all: $(VENV_STAMP) ## run every fault scenario sequentially: make simulator-run-all [SKIP=id,id]
+	@$(ZV_SIM) run-all $(if $(SKIP),--skip $(SKIP))
+
+simulator-category: $(VENV_STAMP) ## run a whole category: make simulator-category CAT=replication
 	@if [ -z "$(CAT)" ]; then echo 'usage: make simulator-category CAT=<category>'; exit 2; fi
-	@./.venv/bin/zv-simulator run-category $(CAT)
+	@$(ZV_SIM) run-category $(CAT)
 
 down: ## stop the stack (make down ARGS=-v also wipes the volumes)
 	@./scripts/pipeline-down.sh $(ARGS)

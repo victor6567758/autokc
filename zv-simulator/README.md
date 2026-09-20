@@ -17,10 +17,11 @@ model correctly names the injected fault from that emission alone.
 
 - The `autokc` stack up: `make up` or `make up-dev` from the autokc repo root.
 - Python 3.10+: `make simulator-install` from the autokc repo root (creates/
-  reuses `.venv` there and installs this package editable, putting the
-  `zv-simulator` console script into `.venv/bin`). All commands below are
-  wrapped as make targets, so you never need to activate the venv manually;
-  for direct CLI use: `.venv/bin/zv-simulator ...`.
+  reuses `.venv` there and installs the dependencies from `requirements.txt` -
+  zv-simulator is not installed as a package). All commands below are wrapped
+  as make targets, which init the venv and call `cli.py` explicitly; for
+  direct CLI use from the repo root:
+  `.venv/bin/python zv-simulator/cli.py ...`.
 - Network access from wherever you run this to `localhost:8083` (Connect),
   `:9090` (Prometheus), `:3100` (Loki), `:5432`/`:5433` (Postgres source/sink).
   Works fine run directly on the host if the stack's ports are published as
@@ -29,7 +30,7 @@ model correctly names the injected fault from that emission alone.
   docker-py) for the infra-level scenarios (`kafka-broker-down`, ...).
 
 Endpoints/names can be overridden via the autokc repo-root `.env` (copy
-`zv-simulator/.env.example` there to get started) or plain `ZV_SIM_*` env
+the root `.env.example` to `.env` to get started) or plain `ZV_SIM_*` env
 vars - see `config.py`. An exported env var always wins over `.env`, and `.env`
 wins over the built-in defaults (e.g. `ZV_SIM_CONNECT_URL`,
 `ZV_SIM_PROM_URL`, `ZV_SIM_LOKI_URL`, `ZV_SIM_TOXIPROXY_URL`,
@@ -42,10 +43,30 @@ make simulator-install
 make simulator-list
 make simulator-run ID=replication-slot-issue
 make simulator-category CAT=replication
+make simulator-run-all                        # everything, sequentially (~15 min)
+make simulator-run-all SKIP=slot-wal-retention-high   # drop slow/known-gap ones from a sweep
 ```
+
+`run-all` executes every scenario in one process, category-ordered
+(connection first, then replication), with per-scenario always-cleanup so
+one failure can't poison the next. Full-sweep baseline on the current
+stack is **6/10** - `network-latency-source`, `replication-slot-issue`,
+`publication-dropped` and `source-disconnect-loop` are documented
+detection gaps / build self-heal behaviors (see Known findings), so exit
+code 1 with exactly those four failing is the expected result, not a
+regression; use `SKIP=` (comma-separated) to run only the deterministic
+six. Note `slot-wal-retention-high` needs `make simulate` running
+alongside to generate write traffic.
 
 Each run prints per-expectation pass/fail with detection latency, and
 exits non-zero if anything failed or cleanup didn't restore the stack.
+
+While a run is in flight it also logs live progress to **stderr**
+(`-> injecting fault`, per-expectation `+ ... fired after Xs` lines, a
+`...` heartbeat every 30s for long budgets, cleanup) via Python's standard
+`logging` module (INFO level; configured once in `cli.py`). Final results
+go to stdout, so piping / `--json` output is unaffected. Silence the
+live log with `ZV_SIM_QUIET=1` (CI logs).
 
 ## Scenario catalog (phase 1: connection + replication)
 
@@ -64,8 +85,8 @@ exits non-zero if anything failed or cleanup didn't restore the stack.
 
 Not yet built (see the design doc / next phases): resource exhaustion
 (`oom`, real heap pressure), worker-rebalance faults, sink lag / snapshot
-faults. `scenarios/` is structured so each is its own module -
-add `resource_faults.py`, `lag_faults.py`, `worker_faults.py` the same way.
+faults. `scenarios.py` lists every scenario as a class - add a
+`ResourceFault(Scenario)` subclass (and so on) there the same way.
 
 ## Network fault setup (Toxiproxy)
 
@@ -120,11 +141,16 @@ Every other scenario needs no Toxiproxy involvement at all.
   therefore structurally blind to partitions - `== 0` and threshold rules
   both are, because absent is neither (an instant query over a vanished
   series returns no data, which matches nothing). What a partition IS
-  observable as: the log-based `jdbc-connection-error` (fires in seconds)
-  and, for metric checks, `absent(connected{streaming})` - the scenario
-  expects exactly those two shapes. If zv-monitor should catch partitions
-  as CRITICAL, it needs `absent()`-aware rules or an error-log-driven
-  disconnect rule.
+  observable as: the log-based `jdbc-connection-error` and, for metric
+  checks, `absent(connected{streaming})` - the scenario expects exactly
+  those two shapes. Caveat from a full-sweep run: the log pattern is NOT
+  reliable either - across one full run it produced 0 matching lines in a
+  4-minute cut (Debezium's in-task retry can log exceptions that don't
+  match the `jdbc-connection-error` regex), leaving the 60s
+  `absent()`-over-`connected{streaming}` metric as the only signal that
+  fires. If zv-monitor should catch partitions as CRITICAL, it needs
+  `absent()`-aware rules or an error-log-driven disconnect rule, and the
+  log pattern needs widening.
 - `network-latency-source` is expected to currently FAIL, and that is a
   finding about the same gap from the other side: with 3s latency TCP
   stays up and events keep arriving (delayed), so `msSinceLastEvent`
@@ -141,6 +167,27 @@ Every other scenario needs no Toxiproxy involvement at all.
   to fire, so zv-monitor's `replication-slot-issue` pattern can't trigger on
   this connector version for this fault. If you need that signature, drop the
   slot while the connector is paused, or drop + also remove the stored offset.
+- `publication-dropped` currently FAILS for the same self-heal reason: the
+  custom zv-debezium build recreates a dropped publication itself (~11s,
+  "Creating new publication ... FOR ALL TABLES", no error logged), so the
+  expected NPE / uncaught-exception signature is unreachable on this build.
+  What the fault does leave is a short gap window of missed events; a
+  detector for "publication missing" would have to key on that gap instead.
+- `source-disconnect-loop` currently FAILS - third detection gap of the same
+  family: this custom zv-debezium build does not export
+  `NumberOfDisconnects` at all (verified at the JMX exporter: zero metrics
+  matching "disconnect"; `connected{streaming}` is exported, the disconnect
+  counter is not), so the `increase(...numberofdisconnects[5m]) > 1`
+  expectation and zv-monitor's derived `source-disconnect-loop` rule have
+  nothing to observe, ever. Keep the expectations, document the gap.
+- Fresh-stack note: on a brand-new volume (`make up` after `docker compose
+  down -v` / a prune) the source connector can wedge in an endless
+  `publication "dbz_publication" does not exist` retry loop - the slot's
+  decoding position predates the publication, so the walsender's snapshot
+  can't see it even though `pg_publication` lists it. Repair once and it
+  stays fixed: stop the connector, drop the slot, recreate the publication
+  (`CREATE PUBLICATION dbz_publication FOR TABLE customers, orders`),
+  `DELETE /connectors/inventory-source/offsets`, resume.
 
 ## Design notes
 
@@ -153,7 +200,7 @@ Every other scenario needs no Toxiproxy involvement at all.
   monitor can never drift apart.
 
 - **Everything ties back to the existing catalog.** Expectation queries in
-  `scenarios/*.py` are copied verbatim from `loki-log-patterns.yaml` /
+  `scenarios.py` are copied verbatim from `loki-log-patterns.yaml` /
   `prometheus-metrics.yaml` - if a scenario fails, that's either a bad
   injection or an actual zv-monitor regression, never a query typo living
   in two places.

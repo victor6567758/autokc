@@ -1,7 +1,7 @@
 """Shared config for zv-simulator: deterministic fault injection for the
 zv-monitor pipeline.
 
-Every scenario in scenarios/ targets a failure class that zv-monitor
+Every scenario in scenarios.py targets a failure class that zv-monitor
 already knows how to detect (see zv-monitor/analysis/loki-log-patterns.yaml
 and prometheus-metrics.yaml in the autokc repo). The point isn't just to
 break things - it's to close the loop: inject a known fault, then poll
@@ -15,7 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Optional overrides live in the autokc repo root .env (template:
-# zv-simulator/.env.example). The file is loaded by path relative to this
+# .env.example, same directory). The file is loaded by path relative to this
 # module - not the CWD - so the CLI behaves the same regardless of where it's
 # invoked from. Precedence:
 #   exported env var  >  repo-root .env  >  the defaults below
@@ -33,6 +33,20 @@ CONNECT_REST_URL = os.environ.get("ZV_SIM_CONNECT_URL", "http://localhost:8083")
 PROMETHEUS_URL = os.environ.get("ZV_SIM_PROM_URL", "http://localhost:9090")
 LOKI_URL = os.environ.get("ZV_SIM_LOKI_URL", "http://localhost:3100")
 TOXIPROXY_URL = os.environ.get("ZV_SIM_TOXIPROXY_URL", "http://localhost:8474")
+
+# Toxiproxy fixture (network-cut-source / network-latency-source): the
+# hostname/port the source connector is repointed to during the fault
+# window. The simulator sidecar attaches to the stack network with exactly
+# this alias, and the optional zv-simulator/docker-compose.override.yml
+# service is named so compose DNS resolves the same way.
+TOXIPROXY_HOST = os.environ.get("ZV_SIM_TOXIPROXY_HOST", "toxiproxy")
+TOXIPROXY_LISTEN_PORT = os.environ.get("ZV_SIM_TOXIPROXY_LISTEN_PORT", "15432")
+SIDECAR_IMAGE = os.environ.get("ZV_SIM_TOXIPROXY_IMAGE", "ghcr.io/shopify/toxiproxy:2.9.0")
+SIDECAR_NAME = os.environ.get("ZV_SIM_TOXIPROXY_SIDECAR_NAME", "zv-sim-toxiproxy")
+SIDECAR_LABEL = os.environ.get("ZV_SIM_TOXIPROXY_SIDECAR_LABEL", "zv-simulator.managed")
+TOXIPROXY_COMPOSE_SERVICE = os.environ.get(  # matches zv-simulator/docker-compose.override.yml
+    "ZV_SIM_TOXIPROXY_COMPOSE_SERVICE", "toxiproxy"
+)
 
 PG_SOURCE = dict(
     host=os.environ.get("ZV_SIM_PG_SOURCE_HOST", "localhost"),
@@ -61,3 +75,7 @@ SOURCE_CONNECTOR = os.environ.get("ZV_SIM_SOURCE_CONNECTOR", "inventory-source")
 SINK_CONNECTOR = os.environ.get("ZV_SIM_SINK_CONNECTOR", "customers-sink")
 REPLICATION_SLOT = os.environ.get("ZV_SIM_SLOT_NAME", "dbz_customers_slot")
 PUBLICATION_NAME = os.environ.get("ZV_SIM_PUBLICATION", "dbz_publication")
+# Scratch table for slot-wal-retention-high's bulk WAL generator. Deliberately
+# NOT part of the publication - the WAL piles up behind the pinned slot without
+# ever being decoded or replicated.
+WAL_BLOAT_TABLE = os.environ.get("ZV_SIM_WAL_BLOAT_TABLE", "zv_sim_wal_bloat")

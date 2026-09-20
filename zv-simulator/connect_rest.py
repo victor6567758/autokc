@@ -49,16 +49,70 @@ class ConnectRest:
     def resume(self, connector: str):
         requests.put(self._url(f"/connectors/{connector}/resume"), timeout=self.timeout).raise_for_status()
 
-    def restart_connector(self, connector: str, include_tasks: bool = True):
+    def restart_connector(
+        self,
+        connector: str,
+        include_tasks: bool = True,
+        retries: int = 6,
+        backoff_s: float = 5.0,
+    ):
+        """POST /restart, retrying transient transport failures. Right after
+        an infrastructure recovery (broker container restarted) the worker's
+        REST layer can accept the request but block applying it until its
+        own Kafka producer reconnects - the client sees a read timeout even
+        though the worker is otherwise alive. The restart is idempotent, so
+        retrying until one goes through (or retries exhaust) is safe."""
         params = {"includeTasks": "true"} if include_tasks else {}
-        requests.post(
-            self._url(f"/connectors/{connector}/restart"), params=params, timeout=self.timeout
-        ).raise_for_status()
+        last_exc: Exception | None = None
+        for _ in range(max(1, retries)):
+            try:
+                requests.post(
+                    self._url(f"/connectors/{connector}/restart"),
+                    params=params,
+                    timeout=self.timeout,
+                ).raise_for_status()
+                return
+            except requests.exceptions.RequestException as exc:
+                last_exc = exc
+                time.sleep(backoff_s)
+        assert last_exc is not None
+        raise last_exc
 
     def restart_task(self, connector: str, task_id: int):
         requests.post(
             self._url(f"/connectors/{connector}/tasks/{task_id}/restart"), timeout=self.timeout
         ).raise_for_status()
+
+    def stop(self, connector: str):
+        """PUT stop - fully stops the connector (stronger than pause: the
+        task is torn down). Required before delete_offsets(); restart()
+        brings a stopped connector back."""
+        requests.put(self._url(f"/connectors/{connector}/stop"), timeout=self.timeout).raise_for_status()
+
+    def delete_offsets(self, connector: str, retries: int = 3, backoff_s: float = 5.0):
+        """Drop the connector's stored source offsets (Connect 3.5+).
+        The connector must be STOPPED first (not merely paused), or the
+        worker answers 400. With no offsets left, the connector restarts
+        from its snapshot phase instead of trying to resume at a position
+        that may no longer exist on the server. Retried on transport
+        failures and on 4xx while the stop is still landing (409):
+        right after an infrastructure recovery the worker can accept the
+        request and then stall applying it - the caller sees a timeout
+        even though the delete never ran."""
+        last: Exception | None = None
+        for _ in range(max(1, retries)):
+            try:
+                r = requests.delete(
+                    self._url(f"/connectors/{connector}/offsets"), timeout=self.timeout
+                )
+                if r.status_code < 400:
+                    return
+                last = RuntimeError(f"delete_offsets failed: {r.status_code} {r.text[:200]}")
+            except requests.exceptions.RequestException as exc:
+                last = exc
+            time.sleep(backoff_s)
+        assert last is not None
+        raise last
 
     def flap(self, connector: str, cycles: int, interval_s: float = 2.0):
         """Pause/resume in a tight loop - a config-plane way to make a
@@ -82,5 +136,20 @@ class ConnectRest:
                     return True
             except requests.RequestException:
                 pass  # worker rebalancing mid-restart - keep polling
+            time.sleep(poll_s)
+        return False
+
+    def wait_stopped(self, connector: str, timeout_s: float = 30.0, poll_s: float = 1.0) -> bool:
+        """Wait until the connector reports STOPPED. stop() is asynchronous
+        (202 just means accepted) - calling delete_offsets() before the stop
+        has landed answers 400 "must be in the STOPPED state"."""
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            try:
+                st = self.status(connector)
+                if st["connector"]["state"] == "STOPPED":
+                    return True
+            except requests.RequestException:
+                pass
             time.sleep(poll_s)
         return False

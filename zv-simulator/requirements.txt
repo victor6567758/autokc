@@ -1,0 +1,8 @@
+# zv-simulator runtime dependencies. Installed into the autokc repo-root
+# .venv by `make simulator-install` (the Makefile's VENV_STAMP rule) -
+# zv-simulator itself is run from source, never pip-installed.
+docker>=7.0.0
+psycopg2-binary>=2.9
+requests>=2.31
+PyYAML>=6.0
+python-dotenv>=1.0

@@ -9,10 +9,18 @@ connection getting reaped by a pooler, a role losing a grant).
 """
 from __future__ import annotations
 
+import time
+
 import psycopg2
 import psycopg2.extensions
 
-from config import PG_SOURCE, PG_SINK, REPLICATION_SLOT, PUBLICATION_NAME
+from config import (
+    PG_SOURCE,
+    PG_SINK,
+    REPLICATION_SLOT,
+    PUBLICATION_NAME,
+    WAL_BLOAT_TABLE,
+)
 
 
 def _connect(cfg: dict, autocommit: bool = True):
@@ -46,23 +54,52 @@ class PgFaults:
             row = cur.fetchone()
             return row[0] if row and row[0] else None
 
+    def wait_slot_active(self, slot_name: str = REPLICATION_SLOT, timeout_s: float = 120.0) -> bool:
+        """Wait until a walsender is attached to the slot again - the point
+        where Debezium has finished (re-)snapshotting and gone back to
+        streaming. Poll only, never touches server state."""
+        import time
+
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if self.replication_pid(slot_name) is not None:
+                return True
+            time.sleep(2.0)
+        return False
+
     # -- faults -----------------------------------------------------------
 
     def drop_replication_slot(self, slot_name: str = REPLICATION_SLOT):
         """Drops the slot Debezium is streaming from. If the slot is
         currently active (attached), Postgres refuses the drop with an
         error unless the streaming connection is terminated first - so
-        this pairs naturally with terminate_backend(). Expect:
+        this pairs naturally with terminate_backend(). Terminating a
+        backend is asynchronous, so the drop is retried a few times
+        (re-terminating each round) until Postgres releases the slot.
+        Expect:
           log:  replication-slot-issue
                 ('logical replication slot ... does not exist' on
                  the connector's next reconnect attempt)
           metric: source-disconnected -> 1
         """
-        pid = self.replication_pid(slot_name)
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
-            if pid:
-                cur.execute("SELECT pg_terminate_backend(%s)", (pid,))
-            cur.execute("SELECT pg_drop_replication_slot(%s)", (slot_name,))
+        last_err: Exception | None = None
+        for _ in range(5):
+            pid = self.replication_pid(slot_name)
+            with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+                if pid:
+                    cur.execute("SELECT pg_terminate_backend(%s)", (pid,))
+            time.sleep(1.0)  # let the walsender actually exit
+            try:
+                with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+                    cur.execute("SELECT pg_drop_replication_slot(%s)", (slot_name,))
+                return
+            except psycopg2.errors.ObjectInUse as exc:
+                last_err = exc
+            except psycopg2.errors.UndefinedObject:
+                return  # slot already gone - the desired end state
+        raise RuntimeError(
+            f"could not drop replication slot {slot_name!r}: {last_err}"
+        )
 
     def recreate_replication_slot(
         self, slot_name: str = REPLICATION_SLOT, plugin: str = "pgoutput"
@@ -147,6 +184,46 @@ class PgFaults:
         cur.execute("SELECT pg_sleep(%s)", (seconds,))
         conn.rollback()
         conn.close()
+
+    def bulk_generate_wal(self, seconds: int = 300, target_bytes: int = 2 * 1024**3):
+        """Fills the WAL with bulk heap writes while hold_long_transaction()
+        pins the slot's restart_lsn, so retention crosses any realistic
+        threshold (zv-monitor fires at 1 GiB) in about a minute instead of
+        hours. The writes go to a dedicated table that is NOT part of the
+        publication: the physical WAL still piles up behind the pinned slot,
+        but Debezium never decodes it and the sink never sees it - the fault
+        stays isolated to the slot-retention metric it is meant to exercise.
+        Blocking call - run in a background thread alongside the hold.
+        """
+        import time
+
+        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+            cur.execute(f"CREATE TABLE IF NOT EXISTS {WAL_BLOAT_TABLE} (id int, pad text)")
+            cur.execute(f"TRUNCATE {WAL_BLOAT_TABLE}")
+            cur.execute("SELECT pg_current_wal_lsn()")
+            start_lsn = cur.fetchone()[0]
+            written = 0
+            deadline = time.time() + seconds
+            # ~5 MB of WAL per batch (2500 rows x ~2 KB) in autocommit mode,
+            # so each batch is its own small transaction - restart_lsn stays
+            # pinned behind the concurrent hold, not behind this writer.
+            while time.time() < deadline and written < target_bytes:
+                cur.execute(
+                    f"INSERT INTO {WAL_BLOAT_TABLE} "
+                    "SELECT g, repeat(md5(g::text), 60) FROM generate_series(1, 2500) g"
+                )
+                cur.execute(
+                    # pg_wal_lsn_diff(end, start) - there is no one-argument
+                    # pg_current_wal_lsn_diff() in Postgres; measuring the
+                    # distance from the batch loop's starting LSN.
+                    "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), %s::pg_lsn)",
+                    (start_lsn,),
+                )
+                written = int(cur.fetchone()[0])
+
+    def drop_wal_bloat_table(self):
+        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+            cur.execute(f"DROP TABLE IF EXISTS {WAL_BLOAT_TABLE}")
 
     def drop_publication(self, publication: str = PUBLICATION_NAME):
         """Removes the publication backing the slot - a config-drift fault
