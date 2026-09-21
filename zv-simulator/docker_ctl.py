@@ -10,12 +10,24 @@ import time
 import docker
 from docker.errors import NotFound
 
-from config import COMPOSE_PROJECT
+from config import (
+    COMPOSE_PROJECT,
+    DOCKER_API_TIMEOUT_S,
+    DOCKER_EXEC_RUN_USER,
+    DOCKER_KILL_SIGNAL,
+    DOCKER_RESTART_LOOP_INTERVAL_S,
+    DOCKER_RESTART_TIMEOUT,
+    DOCKER_WAIT_RUNNING_TIMEOUT_S,
+)
 
 
 class DockerCtl:
-    def __init__(self, compose_project: str = COMPOSE_PROJECT):
-        self.client = docker.from_env()
+    def __init__(self, compose_project: str):
+        # Explicit client-side ceiling on every docker API call. Without it,
+        # exec/kill/restart against a paused or wedged container (pause() is
+        # one of this tool's own faults, and a leftover from an aborted run
+        # survives between runs) blocks far beyond any sane step budget.
+        self.client = docker.from_env(timeout=DOCKER_API_TIMEOUT_S)
         self.compose_project = compose_project
 
     def container(self, service: str):
@@ -44,7 +56,7 @@ class DockerCtl:
 
     # -- lifecycle faults ---------------------------------------------------
 
-    def kill(self, service: str, signal: str = "SIGKILL"):
+    def kill(self, service: str, signal: str):
         self.container(service).kill(signal=signal)
 
     def pause(self, service: str):
@@ -56,14 +68,14 @@ class DockerCtl:
     def unpause(self, service: str):
         self.container(service).unpause()
 
-    def restart(self, service: str, timeout: int = 5):
+    def restart(self, service: str, timeout: int):
         self.container(service).restart(timeout=timeout)
 
-    def restart_loop(self, service: str, times: int, interval_s: float = 3.0):
+    def restart_loop(self, service: str, times: int, interval_s: float):
         """Repeated restarts - the reliable way to trigger a Connect worker
         rebalance storm (maps to the worker-rebalance-loop metric)."""
         for _ in range(times):
-            self.restart(service)
+            self.restart(service, timeout=DOCKER_RESTART_TIMEOUT)
             time.sleep(interval_s)
 
     def is_running(self, service: str) -> bool:
@@ -74,7 +86,7 @@ class DockerCtl:
         c.reload()
         return c.status == "running"
 
-    def wait_running(self, service: str, timeout_s: float = 60.0) -> bool:
+    def wait_running(self, service: str, timeout_s: float) -> bool:
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if self.is_running(service):
@@ -121,5 +133,5 @@ class DockerCtl:
 
     # -- exec ---------------------------------------------------------------
 
-    def exec_run(self, service: str, cmd: str, user: str | None = None):
+    def exec_run(self, service: str, cmd: str, user: str | None):
         return self.container(service).exec_run(cmd, user=user)

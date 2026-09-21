@@ -26,12 +26,29 @@ from simulator import Context
 from toxiproxy_ctl import ToxiproxyCtl, ToxiproxyFixture
 from verifier import Expectation
 from config import (
+    BACKOFF_RESTART_CONNECTOR,
+    CONNECT_REST_RESTART_INCLUDE_TASKS,
+    DOCKER_KILL_SIGNAL,
+    DOCKER_RESTART_TIMEOUT,
+    PG_BULK_GENERATE_WAL_SECONDS,
+    PG_BULK_GENERATE_WAL_TARGET_BYTES,
+    PG_HOLD_LONG_TRANSACTION_SECONDS,
+    PG_REPLICATION_SLOT_PLUGIN,
     PUBLICATION_NAME,
+    PUBLICATION_TABLES,
     REPLICATION_SLOT,
+    RESET_SOURCE_TIMEOUT_S,
+    RETRIES_RESTART_CONNECTOR,
     SINK_CONNECTOR,
     SOURCE_CONNECTOR,
+    TOXIPROXY_ADD_LATENCY_JITTER_MS,
+    TOXIPROXY_ADD_LATENCY_MS,
     TOXIPROXY_HOST,
     TOXIPROXY_LISTEN_PORT,
+    TOXIPROXY_PG_SOURCE_LISTEN,
+    TOXIPROXY_PG_SOURCE_PROXY_NAME,
+    TOXIPROXY_PG_SOURCE_UPSTREAM,
+    WAIT_RUNNING_POLL,
 )
 
 
@@ -80,7 +97,11 @@ class RoutedThroughProxy(Scenario):
         # validates the JDBC connection synchronously on PUT, so pointing
         # the connector at 15432 with no listener there fails the PUT
         # outright.
-        ctx.toxiproxy.ensure_proxy()
+        ctx.toxiproxy.ensure_proxy(
+            name=TOXIPROXY_PG_SOURCE_PROXY_NAME,
+            listen=TOXIPROXY_PG_SOURCE_LISTEN,
+            upstream=TOXIPROXY_PG_SOURCE_UPSTREAM,
+        )
         original = ctx.connect.get_config(SOURCE_CONNECTOR)
         try:
             ctx.connect.set_config(SOURCE_CONNECTOR, {
@@ -88,7 +109,11 @@ class RoutedThroughProxy(Scenario):
                 "database.hostname": TOXIPROXY_HOST,
                 "database.port": TOXIPROXY_LISTEN_PORT,
             })
-            if not ctx.connect.wait_running(SOURCE_CONNECTOR, timeout_s=90):
+            if not ctx.connect.wait_running(
+                SOURCE_CONNECTOR,
+                timeout_s=90,
+                poll_s=WAIT_RUNNING_POLL,
+            ):
                 raise RuntimeError(
                     f"{SOURCE_CONNECTOR} did not reach RUNNING through the toxiproxy - "
                     "aborting before injecting the fault"
@@ -104,10 +129,15 @@ class RoutedThroughProxy(Scenario):
         original connector config back (direct postgres-source connection),
         restart, and remove the toxiproxy fixture - but only if we started
         it."""
-        ctx.toxiproxy.restore()
+        ctx.toxiproxy.restore(name=TOXIPROXY_PG_SOURCE_PROXY_NAME)
         ctx.toxiproxy.clear_toxics()
         ctx.connect.set_config(SOURCE_CONNECTOR, original)
-        ctx.connect.restart_connector(SOURCE_CONNECTOR)
+        ctx.connect.restart_connector(
+            SOURCE_CONNECTOR,
+            include_tasks=CONNECT_REST_RESTART_INCLUDE_TASKS,
+            retries=RETRIES_RESTART_CONNECTOR,
+            backoff_s=BACKOFF_RESTART_CONNECTOR,
+        )
         ToxiproxyFixture(ctx.docker).stop(started)
 
 
@@ -168,7 +198,7 @@ class NetworkCutSource(RoutedThroughProxy):
     def run(self, ctx: Context):
         original, started = self.route_source_through_proxy(ctx)
         try:
-            ctx.toxiproxy.cut()
+            ctx.toxiproxy.cut(name=TOXIPROXY_PG_SOURCE_PROXY_NAME)
             yield
         finally:
             self.unroute_source_from_proxy(ctx, original, started)
@@ -205,7 +235,11 @@ class NetworkLatencySource(RoutedThroughProxy):
     def run(self, ctx: Context):
         original, started = self.route_source_through_proxy(ctx)
         try:
-            ctx.toxiproxy.add_latency(latency_ms=3000, jitter_ms=500)
+            ctx.toxiproxy.add_latency(
+                name=TOXIPROXY_PG_SOURCE_PROXY_NAME,
+                latency_ms=TOXIPROXY_ADD_LATENCY_MS,
+                jitter_ms=TOXIPROXY_ADD_LATENCY_JITTER_MS,
+            )
             yield
         finally:
             self.unroute_source_from_proxy(ctx, original, started)
@@ -257,7 +291,12 @@ class JdbcConnectionError(Scenario):
         ctx.connect.set_config(SINK_CONNECTOR, bad_config)
         yield
         ctx.connect.set_config(SINK_CONNECTOR, good_config)
-        ctx.connect.restart_connector(SINK_CONNECTOR)
+        ctx.connect.restart_connector(
+            SINK_CONNECTOR,
+            include_tasks=CONNECT_REST_RESTART_INCLUDE_TASKS,
+            retries=RETRIES_RESTART_CONNECTOR,
+            backoff_s=BACKOFF_RESTART_CONNECTOR,
+        )
 
 
 class KafkaBrokerDown(Scenario):
@@ -289,12 +328,22 @@ class KafkaBrokerDown(Scenario):
     ]
 
     def run(self, ctx: Context):
-        ctx.docker.kill("kafka")
+        ctx.docker.kill("kafka", signal=DOCKER_KILL_SIGNAL)
         yield
-        ctx.docker.restart("kafka")
+        ctx.docker.restart("kafka", timeout=DOCKER_RESTART_TIMEOUT)
         ctx.docker.wait_running("kafka", timeout_s=60)
-        ctx.connect.restart_connector(SOURCE_CONNECTOR)
-        ctx.connect.restart_connector(SINK_CONNECTOR)
+        ctx.connect.restart_connector(
+            SOURCE_CONNECTOR,
+            include_tasks=CONNECT_REST_RESTART_INCLUDE_TASKS,
+            retries=RETRIES_RESTART_CONNECTOR,
+            backoff_s=BACKOFF_RESTART_CONNECTOR,
+        )
+        ctx.connect.restart_connector(
+            SINK_CONNECTOR,
+            include_tasks=CONNECT_REST_RESTART_INCLUDE_TASKS,
+            retries=RETRIES_RESTART_CONNECTOR,
+            backoff_s=BACKOFF_RESTART_CONNECTOR,
+        )
 
 
 # -- replication-class faults -------------------------------------------------
@@ -339,11 +388,14 @@ class ReplicationSlotIssue(Scenario):
     ]
 
     def run(self, ctx: Context):
-        ctx.pg.drop_replication_slot(REPLICATION_SLOT)
+        ctx.pg.drop_replication_slot(slot_name=REPLICATION_SLOT)
         yield
         # Debezium will not recreate a slot it didn't drop itself - without
         # this the pipeline stays broken for every scenario run after this one.
-        ctx.pg.recreate_replication_slot(REPLICATION_SLOT)
+        ctx.pg.recreate_replication_slot(
+            slot_name=REPLICATION_SLOT,
+            plugin=PG_REPLICATION_SLOT_PLUGIN,
+        )
         # A freshly recreated slot's flush position is ahead of Debezium's
         # stored offset, which permanently wedges the task ("... this is no
         # longer available on the server" - no snapshot mode gets past that
@@ -352,7 +404,7 @@ class ReplicationSlotIssue(Scenario):
         # then wait for streaming to re-attach to the new slot. The shared
         # reset helper tolerates individual step failures but always resumes,
         # so the sweep can never continue with a stopped connector.
-        if not ctx.reset_source():
+        if not ctx.reset_source(drop_slot=True, timeout_s=RESET_SOURCE_TIMEOUT_S):
             raise RuntimeError("source connector did not resume streaming after offset reset")
 
 
@@ -383,7 +435,7 @@ class SourceConnectionTerminated(Scenario):
     ]
 
     def run(self, ctx: Context):
-        ctx.pg.terminate_backend(slot_name=REPLICATION_SLOT)
+        ctx.pg.terminate_backend(pid=None, slot_name=REPLICATION_SLOT)
         yield
         # nothing to clean up - Debezium is expected to self-heal here; the
         # scenario is really testing that it does (watch source-disconnected
@@ -453,10 +505,15 @@ class ReplicationPrivilegeRevoked(Scenario):
         ctx.pg.revoke_replication("postgres")
         # only kicks in on a new connection, so terminate the streaming
         # backend to force an immediate reconnect attempt
-        ctx.pg.terminate_backend(slot_name=REPLICATION_SLOT)
+        ctx.pg.terminate_backend(pid=None, slot_name=REPLICATION_SLOT)
         yield
         ctx.pg.restore_replication("postgres")
-        ctx.connect.restart_connector(SOURCE_CONNECTOR)
+        ctx.connect.restart_connector(
+            SOURCE_CONNECTOR,
+            include_tasks=CONNECT_REST_RESTART_INCLUDE_TASKS,
+            retries=RETRIES_RESTART_CONNECTOR,
+            backoff_s=BACKOFF_RESTART_CONNECTOR,
+        )
 
 
 class PublicationDropped(Scenario):
@@ -494,21 +551,21 @@ class PublicationDropped(Scenario):
     ]
 
     def run(self, ctx: Context):
-        ctx.pg.drop_publication(PUBLICATION_NAME)
+        ctx.pg.drop_publication(publication=PUBLICATION_NAME)
         # without the terminate Debezium doesn't even notice the drop until
         # its next connection - the terminate forces the issue (which is also
         # the real-world failure shape: an operator script that dropped the
         # publication AND reset connections)
-        ctx.pg.terminate_backend(slot_name=REPLICATION_SLOT)
+        ctx.pg.terminate_backend(pid=None, slot_name=REPLICATION_SLOT)
         yield
         # Debezium never recreates a dropped publication either - without this,
         # the source stays silent forever and the metric expectation above
         # becomes meaningless noise for every scenario run after this one.
-        ctx.pg.recreate_publication(PUBLICATION_NAME)
+        ctx.pg.recreate_publication(publication=PUBLICATION_NAME, tables=PUBLICATION_TABLES)
         # the streaming position in the slot is past the publication drop, so
         # simply restarting leaves Debezium with no new events - drop the
         # offsets and re-snapshot (same reasoning as the slot-drop scenario)
-        if not ctx.reset_source():
+        if not ctx.reset_source(drop_slot=True, timeout_s=RESET_SOURCE_TIMEOUT_S):
             raise RuntimeError("source connector did not resume streaming after publication reset")
 
 
@@ -545,7 +602,9 @@ class SlotWalRetentionHigh(Scenario):
         # expectations are satisfied - the WAL keeps flowing while we poll).
         hold_seconds = 120
         t = threading.Thread(
-            target=ctx.pg.hold_long_transaction, args=(hold_seconds,), daemon=True
+            target=ctx.pg.hold_long_transaction,
+            kwargs={"seconds": hold_seconds},
+            daemon=True,
         )
         t.start()
         # The 2s sleep is a poor-man's ordering guarantee: make sure the
@@ -553,7 +612,12 @@ class SlotWalRetentionHigh(Scenario):
         # the WAL cannot possibly pass it.
         time.sleep(2.0)
         b = threading.Thread(
-            target=ctx.pg.bulk_generate_wal, args=(hold_seconds,), daemon=True
+            target=ctx.pg.bulk_generate_wal,
+            kwargs={
+                "seconds": hold_seconds,
+                "target_bytes": PG_BULK_GENERATE_WAL_TARGET_BYTES,
+            },
+            daemon=True,
         )
         b.start()
         yield

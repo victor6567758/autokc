@@ -28,9 +28,11 @@ from config import (
     SIDECAR_LABEL,
     SIDECAR_NAME,
     TOXIPROXY_COMPOSE_SERVICE,
+    TOXIPROXY_CONTROL_API_UP_TIMEOUT,
     TOXIPROXY_HOST,
     TOXIPROXY_LISTEN_PORT,
     TOXIPROXY_URL,
+    TOXIPROXY_WAIT_CONTROL_API_TIMEOUT,
 )
 
 PG_SOURCE_PROXY = "pg-source"
@@ -55,7 +57,7 @@ class ToxiproxyFixture:
     """Guarantees a running toxiproxy for a fault window (and undoes
     exactly what it had to do to get one). Wraps one DockerCtl."""
 
-    def __init__(self, docker, base_url: str = TOXIPROXY_URL):
+    def __init__(self, docker, base_url: str):
         self.docker = docker
         self.base_url = base_url
 
@@ -63,17 +65,17 @@ class ToxiproxyFixture:
         found = self.docker.client.containers.list(all=True, filters={"label": label_filters})
         return found[0] if found else None
 
-    def _control_api_up(self, timeout: float = 2.0) -> bool:
+    def _control_api_up(self, timeout: float) -> bool:
         try:
             r = requests.get(f"{self.base_url.rstrip('/')}/proxies", timeout=timeout)
             return r.status_code == 200
         except requests.RequestException:
             return False
 
-    def _wait_control_api(self, timeout_s: float = 20.0) -> None:
+    def _wait_control_api(self, timeout_s: float) -> None:
         deadline = time.time() + timeout_s
         while time.time() < deadline:
-            if self._control_api_up():
+            if self._control_api_up(timeout=TOXIPROXY_CONTROL_API_UP_TIMEOUT):
                 return
             time.sleep(0.5)
         raise RuntimeError(
@@ -115,7 +117,7 @@ class ToxiproxyFixture:
                 # override file the next time that stack variant comes up.
                 service.remove(force=True)
             else:
-                self._wait_control_api()
+                self._wait_control_api(timeout_s=TOXIPROXY_WAIT_CONTROL_API_TIMEOUT)
                 return "service"
 
         stale = self._find_container([f"{SIDECAR_LABEL}=true"])
@@ -133,7 +135,7 @@ class ToxiproxyFixture:
             ports={"8474/tcp": ("127.0.0.1", 8474)},
         )
         net.connect(sidecar, aliases=[TOXIPROXY_HOST])
-        self._wait_control_api()
+        self._wait_control_api(timeout_s=TOXIPROXY_WAIT_CONTROL_API_TIMEOUT)
         return "sidecar"
 
     def stop(self, started: str | None) -> None:
@@ -155,7 +157,7 @@ class ToxiproxyFixture:
 
 
 class ToxiproxyCtl:
-    def __init__(self, base_url: str = TOXIPROXY_URL, timeout: float = 5.0):
+    def __init__(self, base_url: str, timeout: float):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
@@ -164,9 +166,9 @@ class ToxiproxyCtl:
 
     def ensure_proxy(
         self,
-        name: str = PG_SOURCE_PROXY,
-        listen: str = f"0.0.0.0:{TOXIPROXY_LISTEN_PORT}",
-        upstream: str = "postgres-source:5432",
+        name: str,
+        listen: str,
+        upstream: str,
     ):
         """Idempotently create the proxy. Safe to call at the start of
         every scenario run."""
@@ -181,20 +183,20 @@ class ToxiproxyCtl:
         r.raise_for_status()
         return r.json()
 
-    def cut(self, name: str = PG_SOURCE_PROXY):
+    def cut(self, name: str):
         """Hard cut - disables the proxy entirely, new AND existing
         connections drop. Closest analog to a network partition."""
         requests.post(
             self._url(f"/proxies/{name}"), json={"enabled": False}, timeout=self.timeout
         ).raise_for_status()
 
-    def restore(self, name: str = PG_SOURCE_PROXY):
+    def restore(self, name: str):
         requests.post(
             self._url(f"/proxies/{name}"), json={"enabled": True}, timeout=self.timeout
         ).raise_for_status()
 
     def add_latency(
-        self, name: str = PG_SOURCE_PROXY, latency_ms: int = 3000, jitter_ms: int = 500
+        self, name: str, latency_ms: int, jitter_ms: int
     ):
         """Slow, not dead - the fault that should trigger
         source-stream-stalled (WARNING) rather than source-disconnected
@@ -212,7 +214,7 @@ class ToxiproxyCtl:
         r.raise_for_status()
         return r.json()
 
-    def add_timeout(self, name: str = PG_SOURCE_PROXY, timeout_ms: int = 30000):
+    def add_timeout(self, name: str, timeout_ms: int):
         """Connection accepted, then goes silent - reproduces a hung
         replication stream rather than a refused/reset one."""
         r = requests.post(
@@ -223,7 +225,7 @@ class ToxiproxyCtl:
         r.raise_for_status()
         return r.json()
 
-    def clear_toxics(self, name: str = PG_SOURCE_PROXY):
+    def clear_toxics(self, name: str):
         r = requests.get(self._url(f"/proxies/{name}/toxics"), timeout=self.timeout)
         r.raise_for_status()
         for toxic in r.json():

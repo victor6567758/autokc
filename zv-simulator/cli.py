@@ -27,7 +27,7 @@ def cmd_list(args):
 
 
 def cmd_run(args):
-    results = [Simulator().run_scenario(args.scenario_id)]
+    results = [Simulator(ctx=None).run_scenario(args.scenario_id)]
     writer = ReportWriter()
     for r in results:
         writer.print_result(r)
@@ -38,7 +38,7 @@ def cmd_run(args):
 
 
 def cmd_run_category(args):
-    results = Simulator().run_category(args.category)
+    results = Simulator(ctx=None).run_category(args.category)
     writer = ReportWriter()
     for r in results:
         writer.print_result(r)
@@ -53,7 +53,7 @@ def cmd_run_all(args):
     # repeatable) so CI can drop slow or known-gap scenarios from a sweep.
     skipped = {s.strip() for part in (args.skip or []) for s in part.split(",") if s.strip()}
     ids = list(args.ids) if args.ids else list(SCENARIOS)  # dict iterates ids
-    results = Simulator().run_all([sid for sid in ids if sid not in skipped])
+    results = Simulator(ctx=None).run_all([sid for sid in ids if sid not in skipped])
     writer = ReportWriter()
     for r in results:
         writer.print_result(r)
@@ -65,11 +65,18 @@ def cmd_run_all(args):
 
 def main():
     # INFO lines go to stderr (report.py owns stdout, keeping --json/capture
-    # clean); ZV_SIM_QUIET=1 drops the level to WARNING to silence them.
+    # clean); ZV_SIM_QUIET=1 drops the level to WARNING to silence them,
+    # ZV_SIM_DEBUG=1 raises it to DEBUG (per-poll verifier progress lines).
     logging.basicConfig(
         format="%(asctime)s %(message)s",
         datefmt="%H:%M:%S",
-        level=logging.WARNING if os.environ.get("ZV_SIM_QUIET") else logging.INFO,
+        level=(
+            logging.DEBUG
+            if os.environ.get("ZV_SIM_DEBUG")
+            else logging.WARNING
+            if os.environ.get("ZV_SIM_QUIET")
+            else logging.INFO
+        ),
     )
     parser = argparse.ArgumentParser(prog="zv-simulator")
     sub = parser.add_subparsers(dest="command", required=True)

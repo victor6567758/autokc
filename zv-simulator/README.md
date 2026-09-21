@@ -63,10 +63,12 @@ exits non-zero if anything failed or cleanup didn't restore the stack.
 
 While a run is in flight it also logs live progress to **stderr**
 (`-> injecting fault`, per-expectation `+ ... fired after Xs` lines, a
-`...` heartbeat every 30s for long budgets, cleanup) via Python's standard
+`...` heartbeat every 10s for long budgets, cleanup) via Python's standard
 `logging` module (INFO level; configured once in `cli.py`). Final results
 go to stdout, so piping / `--json` output is unaffected. Silence the
-live log with `ZV_SIM_QUIET=1` (CI logs).
+live log with `ZV_SIM_QUIET=1` (CI logs); show per-poll DEBUG progress
+with `ZV_SIM_DEBUG=1`; shrink every expectation budget by the same factor
+(e.g. `ZV_SIM_EXPECT_TIMEOUT_SCALE=0.5`) for a quicker interactive pass.
 
 ## Scenario catalog (phase 1: connection + replication)
 

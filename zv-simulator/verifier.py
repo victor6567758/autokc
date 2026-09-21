@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import requests
 
-from config import PROMETHEUS_URL, LOKI_URL
+from config import EXPECT_TIMEOUT_SCALE
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,13 @@ class Expectation:
     timeout_s: float = 45.0
     poll_interval_s: float = 2.0
 
+    def __post_init__(self):
+        # EXPECT_TIMEOUT_SCALE (config.py: ZV_SIM_EXPECT_TIMEOUT_SCALE)
+        # scales every budget uniformly - e.g. 0.5 halves them all for a
+        # quick interactive pass - without rewriting the per-scenario
+        # values, which encode real zv-monitor detection latencies.
+        self.timeout_s *= EXPECT_TIMEOUT_SCALE
+
 
 # The "fault live" anchor (injected_at) is captured when the injection
 # generator yields - i.e. AFTER the fault call returned. Synchronous faults
@@ -62,9 +69,17 @@ class Expectation:
 # satisfy an expectation.
 ANCHOR_GRACE_S = 0.25
 
+# Budget for one Loki/Prometheus HTTP call. Tight on purpose: a wedged
+# query fails fast and visibly (check()'s RequestException handler logs it
+# and keeps polling) instead of stalling the verify phase.
+HTTP_TIMEOUT_S = 5.0
+
+# INFO heartbeat cadence while polling - long budgets must never look hung.
+HEARTBEAT_INTERVAL_S = 10.0
+
 
 class LokiClient:
-    def __init__(self, base_url: str = LOKI_URL):
+    def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
 
     def query_since(self, logql: str, since_ts: float) -> list[dict]:
@@ -81,7 +96,9 @@ class LokiClient:
             "end": str(int(time.time() * 1e9)),
             "limit": 50,
         }
-        r = requests.get(f"{self.base_url}/loki/api/v1/query_range", params=params, timeout=10)
+        r = requests.get(
+            f"{self.base_url}/loki/api/v1/query_range", params=params, timeout=HTTP_TIMEOUT_S
+        )
         r.raise_for_status()
         result = r.json().get("data", {}).get("result", [])
         entries = []
@@ -92,66 +109,84 @@ class LokiClient:
 
 
 class PrometheusClient:
-    def __init__(self, base_url: str = PROMETHEUS_URL):
+    def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
 
     def instant(self, promql: str) -> list[dict]:
         r = requests.get(
-            f"{self.base_url}/api/v1/query", params={"query": promql}, timeout=10
+            f"{self.base_url}/api/v1/query", params={"query": promql}, timeout=HTTP_TIMEOUT_S
         )
         r.raise_for_status()
         return r.json().get("data", {}).get("result", [])
 
 
 class Verifier:
-    def __init__(self):
-        self.loki = LokiClient()
-        self.prom = PrometheusClient()
+    def __init__(self, loki_url: str, prom_url: str):
+        self.loki = LokiClient(base_url=loki_url)
+        self.prom = PrometheusClient(base_url=prom_url)
 
     def check(self, expectation: Expectation, since_ts: float) -> CheckResult:
         started = time.time()
         last_beat = started
         deadline = started + expectation.timeout_s
+        checks = 0
+        log.info(f"    checking {expectation.kind} expectation '{expectation.id}' (timeout {expectation.timeout_s}s)")
         while time.time() < deadline:
-            if expectation.kind == "log":
-                entries = self.loki.query_since(expectation.query, since_ts)
-                if entries:
-                    first = min(e["ts"] for e in entries)
-                    log.info(
-                        f"  + {expectation.id} fired after {max(0.0, first - since_ts):.1f}s"
-                        f" ({len(entries)} matching line(s))"
-                    )
-                    return CheckResult(
-                        expectation.id, True, first, f"{len(entries)} matching line(s)"
-                    )
-            elif expectation.kind == "metric":
-                result = self.prom.instant(expectation.query)
-                if result:
-                    now = time.time()
-                    log.info(
-                        f"  + {expectation.id} fired after {now - since_ts:.1f}s"
-                        f" ({len(result)} series matched)"
-                    )
-                    return CheckResult(
-                        expectation.id, True, now, f"{len(result)} series matched"
-                    )
-            elif expectation.kind == "event":
-                fired_at = self.event_fired_since(expectation, since_ts)
-                if fired_at is not None:
-                    log.info(
-                        f"  + {expectation.id} fired after {max(0.0, fired_at - since_ts):.1f}s"
-                        f" (zv-monitor emitted {expectation.source}/{expectation.pattern})"
-                    )
-                    return CheckResult(
-                        expectation.id,
-                        True,
-                        fired_at,
-                        f"zv-monitor emitted {expectation.source}/{expectation.pattern}",
-                    )
-            else:
-                raise ValueError(f"unknown expectation kind: {expectation.kind!r}")
+            checks += 1
+            try:
+                if expectation.kind == "log":
+                    entries = self.loki.query_since(expectation.query, since_ts)
+                    if entries:
+                        first = min(e["ts"] for e in entries)
+                        log.info(
+                            f"  + {expectation.id}: MATCH in Loki (check {checks}),"
+                            f" fired after {max(0.0, first - since_ts):.1f}s"
+                            f" ({len(entries)} matching line(s))"
+                        )
+                        return CheckResult(
+                            expectation.id, True, first, f"{len(entries)} matching line(s)"
+                        )
+                elif expectation.kind == "metric":
+                    result = self.prom.instant(expectation.query)
+                    if result:
+                        now = time.time()
+                        log.info(
+                            f"  + {expectation.id}: MATCH in Prometheus (check {checks}),"
+                            f" fired after {now - since_ts:.1f}s"
+                            f" ({len(result)} series matched)"
+                        )
+                        return CheckResult(
+                            expectation.id, True, now, f"{len(result)} series matched"
+                        )
+                elif expectation.kind == "event":
+                    fired_at = self.event_fired_since(expectation, since_ts)
+                    if fired_at is not None:
+                        log.info(
+                            f"  + {expectation.id}: MATCH from zv-monitor (check {checks}),"
+                            f" fired after {max(0.0, fired_at - since_ts):.1f}s"
+                            f" (zv-monitor emitted {expectation.source}/{expectation.pattern})"
+                        )
+                        return CheckResult(
+                            expectation.id,
+                            True,
+                            fired_at,
+                            f"zv-monitor emitted {expectation.source}/{expectation.pattern}",
+                        )
+                else:
+                    raise ValueError(f"unknown expectation kind: {expectation.kind!r}")
+            except requests.RequestException as e:
+                # A flaky/wedged Loki/Prometheus call must not abort the
+                # whole verify phase silently - log it and keep polling
+                # within the budget (HTTP_TIMEOUT_S bounds each attempt).
+                log.warning(f"      {expectation.id}: query failed (check {checks}): {e}")
             now = time.time()
-            if now - last_beat >= 30:  # heartbeat so long budgets don't look hung
+            # one DEBUG line per check (ZV_SIM_DEBUG=1) so progress - or the
+            # absence of it - is observable on every poll, never just every 10th
+            log.debug(
+                f"      {expectation.id}: no match yet"
+                f" (check {checks}, {now - started:.0f}s/{expectation.timeout_s:.0f}s)"
+            )
+            if now - last_beat >= HEARTBEAT_INTERVAL_S:  # heartbeat so long budgets don't look hung
                 log.info(
                     f"  ... {expectation.id}: no match yet"
                     f" ({now - started:.0f}s/{expectation.timeout_s:.0f}s)"

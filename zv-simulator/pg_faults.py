@@ -15,29 +15,43 @@ import psycopg2
 import psycopg2.extensions
 
 from config import (
-    PG_SOURCE,
+    PG_CONNECT_AUTOCOMMIT,
+    PG_CONNECT_TIMEOUT_S,
+    PG_HOLD_LONG_TRANSACTION_SECONDS,
     PG_SINK,
-    REPLICATION_SLOT,
+    PG_SOURCE,
+    PG_TERMINATE_BACKEND_ROLE,
+    PG_WAIT_SLOT_ACTIVE_TIMEOUT_S,
     PUBLICATION_NAME,
+    PUBLICATION_TABLES,
+    REPLICATION_SLOT,
     WAL_BLOAT_TABLE,
 )
 
 
-def _connect(cfg: dict, autocommit: bool = True):
-    conn = psycopg2.connect(**cfg)
+def _connect(cfg: dict, autocommit: bool):
+    # Merge the fail-fast connect timeout under the caller's cfg so an
+    # explicit connect_timeout in a cfg dict still wins. psycopg2 raises
+    # OperationalError after PG_CONNECT_TIMEOUT_S instead of sitting in
+    # the kernel's TCP backlog for minutes. Intentionally NOT setting
+    # statement_timeout: hold_long_transaction()/bulk_generate_wal() run
+    # long statements by design.
+    params: dict = {"connect_timeout": int(PG_CONNECT_TIMEOUT_S)}
+    params.update(cfg)
+    conn = psycopg2.connect(**params)
     conn.autocommit = autocommit
     return conn
 
 
 class PgFaults:
-    def __init__(self, source_cfg: dict = PG_SOURCE, sink_cfg: dict = PG_SINK):
+    def __init__(self, source_cfg: dict, sink_cfg: dict):
         self.source_cfg = source_cfg
         self.sink_cfg = sink_cfg
 
     # -- introspection --------------------------------------------------
 
     def list_replication_slots(self) -> list[dict]:
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+        with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT slot_name, active, active_pid, wal_status, "
                 "restart_lsn FROM pg_replication_slots"
@@ -45,8 +59,8 @@ class PgFaults:
             cols = [d.name for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-    def replication_pid(self, slot_name: str = REPLICATION_SLOT) -> int | None:
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+    def replication_pid(self, slot_name: str) -> int | None:
+        with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT active_pid FROM pg_replication_slots WHERE slot_name = %s",
                 (slot_name,),
@@ -54,7 +68,7 @@ class PgFaults:
             row = cur.fetchone()
             return row[0] if row and row[0] else None
 
-    def wait_slot_active(self, slot_name: str = REPLICATION_SLOT, timeout_s: float = 120.0) -> bool:
+    def wait_slot_active(self, slot_name: str, timeout_s: float) -> bool:
         """Wait until a walsender is attached to the slot again - the point
         where Debezium has finished (re-)snapshotting and gone back to
         streaming. Poll only, never touches server state."""
@@ -67,9 +81,17 @@ class PgFaults:
             time.sleep(2.0)
         return False
 
+    def slot_exists(self, slot_name: str) -> bool:
+        """Existence-only introspection (unlike replication_pid/wait_slot_active,
+        an existing-but-inactive slot still counts: a slot with no walsender
+        attached is a transient Debezium reconnect, not a missing slot). Used
+        by the run-all inter-scenario gate to tell "healthy" from "needs an
+        unwedge"."""
+        return any(s["slot_name"] == slot_name for s in self.list_replication_slots())
+
     # -- faults -----------------------------------------------------------
 
-    def drop_replication_slot(self, slot_name: str = REPLICATION_SLOT):
+    def drop_replication_slot(self, slot_name: str):
         """Drops the slot Debezium is streaming from. If the slot is
         currently active (attached), Postgres refuses the drop with an
         error unless the streaming connection is terminated first - so
@@ -85,12 +107,12 @@ class PgFaults:
         last_err: Exception | None = None
         for _ in range(5):
             pid = self.replication_pid(slot_name)
-            with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+            with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
                 if pid:
                     cur.execute("SELECT pg_terminate_backend(%s)", (pid,))
             time.sleep(1.0)  # let the walsender actually exit
             try:
-                with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+                with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
                     cur.execute("SELECT pg_drop_replication_slot(%s)", (slot_name,))
                 return
             except psycopg2.errors.ObjectInUse as exc:
@@ -102,12 +124,12 @@ class PgFaults:
         )
 
     def recreate_replication_slot(
-        self, slot_name: str = REPLICATION_SLOT, plugin: str = "pgoutput"
+        self, slot_name: str, plugin: str
     ):
         """Cleanup for drop_replication_slot - without this the connector
         stays broken forever (Debezium does not auto-recreate a manually
         dropped slot)."""
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+        with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT 1 FROM pg_replication_slots WHERE slot_name = %s", (slot_name,)
             )
@@ -118,7 +140,7 @@ class PgFaults:
                 (slot_name, plugin),
             )
 
-    def terminate_backend(self, pid: int | None = None, slot_name: str = REPLICATION_SLOT):
+    def terminate_backend(self, pid: int | None, slot_name: str):
         """Kills the replication connection's backend without dropping the
         slot - Debezium should reconnect and resume from restart_lsn.
         Called once: a transient blip. Called repeatedly (see
@@ -133,11 +155,11 @@ class PgFaults:
                 f"no active backend for slot '{slot_name}' - is the source "
                 f"connector RUNNING and streaming?"
             )
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+        with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute("SELECT pg_terminate_backend(%s)", (pid,))
 
     def terminate_backend_loop(
-        self, slot_name: str = REPLICATION_SLOT, times: int = 3, interval_s: float = 20.0
+        self, slot_name: str, times: int, interval_s: float
     ):
         import time
 
@@ -148,7 +170,7 @@ class PgFaults:
                 pass  # connector may still be reconnecting from the last kill
             time.sleep(interval_s)
 
-    def revoke_replication(self, role: str = "postgres"):
+    def revoke_replication(self, role: str):
         """Strips REPLICATION privilege from the role Debezium connects as.
         Unlike terminate_backend, this makes every reconnect attempt fail
         with an auth-flavored error rather than a transport one - a
@@ -159,14 +181,14 @@ class PgFaults:
         touch REPLICATION so pg_isready/healthchecks keep passing and the
         fault stays isolated to the CDC path.
         """
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+        with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(f"ALTER ROLE {role} NOREPLICATION")
 
-    def restore_replication(self, role: str = "postgres"):
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+    def restore_replication(self, role: str):
+        with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(f"ALTER ROLE {role} REPLICATION")
 
-    def hold_long_transaction(self, seconds: int = 180):
+    def hold_long_transaction(self, seconds: int):
         """Opens a transaction on source and holds it via pg_sleep(),
         without committing. A long-open transaction on a table covered by
         the publication prevents the slot's restart_lsn from advancing
@@ -185,7 +207,7 @@ class PgFaults:
         conn.rollback()
         conn.close()
 
-    def bulk_generate_wal(self, seconds: int = 300, target_bytes: int = 2 * 1024**3):
+    def bulk_generate_wal(self, seconds: int, target_bytes: int):
         """Fills the WAL with bulk heap writes while hold_long_transaction()
         pins the slot's restart_lsn, so retention crosses any realistic
         threshold (zv-monitor fires at 1 GiB) in about a minute instead of
@@ -197,7 +219,7 @@ class PgFaults:
         """
         import time
 
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+        with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(f"CREATE TABLE IF NOT EXISTS {WAL_BLOAT_TABLE} (id int, pad text)")
             cur.execute(f"TRUNCATE {WAL_BLOAT_TABLE}")
             cur.execute("SELECT pg_current_wal_lsn()")
@@ -222,21 +244,21 @@ class PgFaults:
                 written = int(cur.fetchone()[0])
 
     def drop_wal_bloat_table(self):
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+        with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(f"DROP TABLE IF EXISTS {WAL_BLOAT_TABLE}")
 
-    def drop_publication(self, publication: str = PUBLICATION_NAME):
+    def drop_publication(self, publication: str):
         """Removes the publication backing the slot - a config-drift fault
         distinct from dropping the slot itself: the slot still exists, but
         Debezium's next snapshot/streaming call fails resolving tables.
         """
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+        with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(f"DROP PUBLICATION IF EXISTS {publication}")
 
     def recreate_publication(
-        self, publication: str = PUBLICATION_NAME, tables: str = "public.customers, public.orders"
+        self, publication: str, tables: str
     ):
-        with _connect(self.source_cfg) as conn, conn.cursor() as cur:
+        with _connect(self.source_cfg, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT 1 FROM pg_publication WHERE pubname = %s", (publication,)
             )
